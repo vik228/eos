@@ -27,6 +27,7 @@ run_check "ImageMagick SIXEL" bash -c 'command -v magick >/dev/null && magick -l
 run_check "paths" "$ROOT/tests/test_paths.sh"
 run_check "symlinks" "$ROOT/tests/test_symlinks.sh"
 run_check "workspace scripts" "$ROOT/tests/test_workspace_scripts.sh"
+run_check "declarative workspaces" "$ROOT/tests/test_declarative_workspaces.sh"
 run_check "agent CLI updater" "$ROOT/tests/test_agent_clis.sh"
 run_check "git profiles" "$ROOT/tests/test_git_profiles.sh"
 run_check "open source config" "$ROOT/tests/test_open_source_config.sh"

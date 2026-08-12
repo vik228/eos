@@ -1,0 +1,11 @@
+schema_version: 1
+session: paper
+directory: $EOS_RESEARCH_ROOT
+mode: tmux
+windows:
+  - { name: editor, command: nvim }
+  - { name: notes, command: zsh }
+  - { name: python, command: python3 }
+  - { name: claude, command: 'claude-personal; exec zsh' }
+  - { name: experiments, command: zsh }
+  - { name: shell, command: zsh }

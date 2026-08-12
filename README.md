@@ -164,9 +164,18 @@ EOS_RESEARCH_PROJECT_SLUG="my-research"
 EOS_RESEARCH_TMUX=1
 ```
 
-Machine defaults and named profiles are configurable. Workspace window
-composition is currently defined by tracked scripts such as `scripts/backend`
-and `scripts/research`; see the customization guide for that boundary.
+Workspace composition is declarative too. A profile can inherit an EOS layout
+or define its own ordered windows and commands in YAML, then validate and
+preview it before launch:
+
+```bash
+EOS_PROFILE=research eos workspace validate research
+EOS_PROFILE=research eos workspace preview research
+```
+
+The installed `configure-eos-workspace` agent skill can interview a user about
+their tools, layout, KB routing, and preferred agent response style, then build
+the profile without requiring them to write YAML manually.
 
 ## Daily Use
 

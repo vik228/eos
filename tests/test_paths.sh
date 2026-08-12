@@ -16,6 +16,7 @@ required_dirs=(
   configs/nvim/lua/config
   configs/nvim/lua/plugins
   configs/agents
+  configs/workspaces
   scripts
   workspaces
   tests

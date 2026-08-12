@@ -1,0 +1,11 @@
+schema_version: 1
+session: backend
+directory: $EOS_BACKEND_DIR
+mode: tmux
+windows:
+  - { name: editor, command: 'nvim "$EOS_BACKEND_DIR"' }
+  - { name: claude, command: 'claude-work; exec zsh' }
+  - { name: codex, command: 'codex-work; exec zsh' }
+  - { name: antigravity, command: 'antigravity-full; exec zsh' }
+  - { name: shell, command: zsh }
+  - { name: logs, command: zsh }

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Configure EOS Workspace"
+  short_description: "Build and validate custom EOS workspaces"
+  default_prompt: "Use $configure-eos-workspace to create a custom workspace profile for me."

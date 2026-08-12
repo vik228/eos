@@ -1,16 +1,3 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
-source "${EOS_ROOT:-$HOME/personal/eos}/scripts/lib-workspace.sh"
-
-if [[ "${1:-}" == "--dry-run" ]]; then
-  export EOS_DRY_RUN=1
-fi
-
-dir="$(resolve_dir "$EOS_ALGO_DIR" "$EOS_PERSONAL_ROOT")"
-run_workspace "algo" "$dir" \
-  "editor:nvim" \
-  "tests:zsh" \
-  "python:python3" \
-  "notes:zsh" \
-  "shell:zsh"
+exec "${EOS_ROOT:-$HOME/personal/eos}/scripts/eos-workspace" algo "$@"

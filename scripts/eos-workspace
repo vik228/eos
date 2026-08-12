@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="${EOS_ROOT:-$HOME/personal/eos}"
+source "$ROOT/scripts/lib-eos-config.sh"
+source "$ROOT/scripts/lib-workspace.sh"
+
+name="${1:-}"
+[[ "$name" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]] || { echo "invalid workspace name: $name" >&2; exit 2; }
+shift || true
+action="launch"
+case "${1:-}" in
+  --dry-run|--preview) export EOS_DRY_RUN=1; action="preview" ;;
+  --validate) action="validate" ;;
+  "") ;;
+  *) echo "usage: eos-workspace <name> [--validate|--preview|--dry-run]" >&2; exit 2 ;;
+esac
+
+profile_file="$EOS_PROFILE_ROOT/$EOS_PROFILE/workspaces/$name.yaml"
+default_file="$ROOT/configs/workspaces/$name.yaml"
+file="$profile_file"
+[[ -f "$file" ]] || file="$default_file"
+[[ -f "$file" ]] || { echo "workspace not found: $name" >&2; exit 1; }
+command -v yq >/dev/null 2>&1 || { echo "yq is required" >&2; exit 1; }
+
+extends="$(yq -r '.extends // ""' "$file")"
+resolved="$file"
+tmp=""
+if [[ -n "$extends" ]]; then
+  [[ "$extends" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]] || { echo "invalid extends value: $extends" >&2; exit 2; }
+  base="$ROOT/configs/workspaces/$extends.yaml"
+  [[ -f "$base" ]] || { echo "base workspace not found: $extends" >&2; exit 1; }
+  tmp="$(mktemp)"
+  trap 'rm -f "$tmp"' EXIT
+  yq ea 'select(fileIndex == 0) * select(fileIndex == 1)' "$base" "$file" >"$tmp"
+  resolved="$tmp"
+fi
+
+[[ "$(yq -r '.schema_version' "$resolved")" == 1 ]] || { echo "workspace schema_version must be 1" >&2; exit 2; }
+session="$(yq -r '.session // "" | envsubst' "$resolved")"
+primary="$(yq -r '.directory // "" | envsubst' "$resolved")"
+fallback="$(yq -r '.fallback_directory // "" | envsubst' "$resolved")"
+mode="$(yq -r '.mode // "tmux"' "$resolved")"
+editor_window="$(yq -r '.editor_window // "editor"' "$resolved")"
+[[ "$session" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]] || { echo "invalid session name" >&2; exit 2; }
+[[ "$mode" == tmux || "$mode" == wezterm-editor ]] || { echo "mode must be tmux or wezterm-editor" >&2; exit 2; }
+[[ -n "$primary" ]] || { echo "workspace directory is required" >&2; exit 2; }
+[[ "$(yq -r '.windows | length' "$resolved")" -gt 0 ]] || { echo "at least one window is required" >&2; exit 2; }
+
+dir="$(resolve_dir "$primary" "$fallback")"
+windows=()
+editor_command=""
+seen_windows="|"
+while IFS= read -r entry; do
+  window="$(printf '%s\n' "$entry" | yq -p=json -r '.name')"
+  command="$(printf '%s\n' "$entry" | yq -p=json -r '.command | envsubst')"
+  [[ "$window" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ && -n "$command" ]] || { echo "invalid window entry" >&2; exit 2; }
+  [[ "$seen_windows" != *"|$window|"* ]] || { echo "duplicate window name: $window" >&2; exit 2; }
+  seen_windows+="$window|"
+  if [[ "$mode" == wezterm-editor && "$window" == "$editor_window" ]]; then editor_command="$command"; else windows+=("$window:$command"); fi
+done < <(yq -o=json -I=0 '.windows[]' "$resolved")
+
+if [[ "$action" == validate ]]; then
+  echo "workspace valid: $name ($file)"
+  exit 0
+fi
+
+if [[ "$mode" == wezterm-editor && -n "${WEZTERM_PANE:-}" && -z "${TMUX:-}" && "${EOS_WORKSPACE_FORCE_TMUX:-${EOS_RESEARCH_TMUX:-0}}" != 1 ]]; then
+  [[ -n "$editor_command" ]] || { echo "editor_window not found: $editor_window" >&2; exit 2; }
+  if [[ "${EOS_DRY_RUN:-0}" == 1 ]]; then
+    echo "editor=wezterm-direct:$editor_command"
+    run_workspace "$session" "$dir" "${windows[@]}"
+    exit 0
+  fi
+  EOS_NO_ATTACH=1 run_workspace "$session" "$dir" "${windows[@]}"
+  editor_pane="$(wezterm cli spawn --cwd "$dir" -- zsh -lc "$editor_command")"
+  wezterm cli activate-pane --pane-id "$editor_pane"
+  tmux attach -t "$session"
+  wezterm cli kill-pane --pane-id "$editor_pane" 2>/dev/null || true
+else
+  [[ -z "$editor_command" ]] || windows=("$editor_window:$editor_command" "${windows[@]}")
+  run_workspace "$session" "$dir" "${windows[@]}"
+fi

@@ -1,0 +1,13 @@
+schema_version: 1
+session: agents
+directory: $EOS_PERSONAL_ROOT
+mode: tmux
+windows:
+  - { name: claude-work, command: 'claude-work; exec zsh' }
+  - { name: claude-personal, command: 'claude-personal; exec zsh' }
+  - { name: codex-work, command: 'codex-work; exec zsh' }
+  - { name: codex-personal, command: 'codex-personal; exec zsh' }
+  - { name: opencode-work, command: 'opencode-work; exec zsh' }
+  - { name: opencode-personal, command: 'opencode-personal; exec zsh' }
+  - { name: antigravity, command: 'antigravity-full; exec zsh' }
+  - { name: shell, command: zsh }

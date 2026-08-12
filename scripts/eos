@@ -16,6 +16,7 @@ EOS commands:
   eos agents
   eos kb <command>
   eos profile init <name> | list | show [name]
+  eos workspace validate|preview|launch <name>
   eos agent doctor
   eos doctor
 USAGE
@@ -91,6 +92,16 @@ case "$cmd" in
   profile)
     shift
     exec "$ROOT/scripts/eos-profile" "$@"
+    ;;
+  workspace)
+    shift
+    action="${1:-}"; name="${2:-}"
+    case "$action" in
+      validate) exec "$ROOT/scripts/eos-workspace" "$name" --validate ;;
+      preview) exec "$ROOT/scripts/eos-workspace" "$name" --preview ;;
+      launch) exec "$ROOT/scripts/eos-workspace" "$name" ;;
+      *) usage >&2; exit 2 ;;
+    esac
     ;;
   agent)
     shift

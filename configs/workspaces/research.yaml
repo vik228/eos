@@ -1,0 +1,16 @@
+schema_version: 1
+session: research
+directory: $EOS_RESEARCH_DIR
+fallback_directory: $EOS_RESEARCH_ROOT
+mode: wezterm-editor
+editor_window: editor
+windows:
+  - { name: editor, command: 'nvim "$EOS_RESEARCH_DIR"' }
+  - { name: workspace, command: zsh }
+  - { name: notes, command: zsh }
+  - { name: python, command: python3 }
+  - { name: claude, command: 'claude-personal; exec zsh' }
+  - { name: codex, command: 'codex-personal; exec zsh' }
+  - { name: opencode, command: 'opencode-personal; exec zsh' }
+  - { name: antigravity, command: 'antigravity-full; exec zsh' }
+  - { name: shell, command: zsh }

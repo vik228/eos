@@ -51,6 +51,14 @@ Use `--dry-run` when checking what a workspace will open:
 backend --dry-run
 ```
 
+Named profiles may replace a built-in layout with declarative YAML. Validate or
+preview one without creating tmux state:
+
+```bash
+EOS_PROFILE=work eos workspace validate backend
+EOS_PROFILE=work eos workspace preview backend
+```
+
 ## tmux First
 
 Keep long-running project state inside tmux:

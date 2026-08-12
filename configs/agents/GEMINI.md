@@ -45,6 +45,7 @@ Workflow routing:
 
 - `configs/agents/skills/branching-discussion/SKILL.md`: Mandatory for any open-ended discussion, planning, design, roadmap, evaluation strategy, requirements exploration, tradeoff analysis, or conversation likely to need more than one question. Trigger before the first question without waiting for the user to name this skill.
 - `configs/agents/skills/bug-investigation/SKILL.md`: Use for bugs, regressions, failed tests, unexpected output, and production discrepancies.
+- `configs/agents/skills/configure-eos-workspace/SKILL.md`: Configure an EOS installation through exploratory questions, including named profiles, agent response preferences, knowledge-base routing, tools, tmux windows, and declarative workspace YAML. Use when a user wants to set up EOS, customize how agents respond, create or change a profile, add or remove workspace windows, or build a complete workspace without editing scripts manually.
 - `configs/agents/skills/knowledge-management/SKILL.md`: Use for knowledge retrieval, KB changes, durable decisions, and session completion.
 
 # EOS Shared Agent Instructions

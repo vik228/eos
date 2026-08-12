@@ -1,0 +1,11 @@
+schema_version: 1
+session: algo
+directory: $EOS_ALGO_DIR
+fallback_directory: $EOS_PERSONAL_ROOT
+mode: tmux
+windows:
+  - { name: editor, command: nvim }
+  - { name: tests, command: zsh }
+  - { name: python, command: python3 }
+  - { name: notes, command: zsh }
+  - { name: shell, command: zsh }

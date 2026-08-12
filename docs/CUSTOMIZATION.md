@@ -111,21 +111,57 @@ EOS_RESEARCH_TMUX=1
 This may be set globally in `.eos.local`, in a named profile, or for one
 command.
 
-## Current workspace-layout boundary
+## Declarative workspace layouts
 
-User identity, paths, KB roots, project routing, agent context, and existing
-workspace switches are configurable. The actual list of tmux windows and the
-commands launched in each window are still declared in tracked scripts such as
-`scripts/backend` and `scripts/research`.
+Workspace composition can be customized without editing EOS scripts. Create:
 
-Therefore, a user who wants a completely different workspace composition must
-currently copy or edit a workspace script. For example, adding a database pane,
-removing an agent, or changing window order is not yet expressible through a
-user-owned profile alone.
+```text
+~/.config/eos/profiles/<profile>/workspaces/<workspace>.yaml
+```
 
-A future declarative workspace layer could move window names and commands into
-ignored profile configuration. Until then, profiles customize values and
-behavioral switches, not the complete workspace graph.
+For a small customization, inherit a built-in layout. A supplied `windows`
+list replaces the inherited list, so order and membership remain explicit:
+
+```yaml
+extends: backend
+session: my-backend
+directory: $HOME/work/my-backend
+windows:
+  - { name: editor, command: nvim }
+  - { name: database, command: pgcli }
+  - { name: shell, command: zsh }
+```
+
+Alternatively, define a complete layout with `schema_version: 1`, `session`,
+`directory`, `mode`, and `windows`. Supported modes are `tmux` and
+`wezterm-editor`.
+
+Validate and preview before launch:
+
+```bash
+EOS_PROFILE=work eos workspace validate backend
+EOS_PROFILE=work eos workspace preview backend
+EOS_PROFILE=work eos workspace launch backend
+```
+
+Window commands are executable local shell commands. Keep profile YAML private,
+review generated commands, and do not place credentials directly in it.
+
+## Agent-assisted setup
+
+EOS installs the `configure-eos-workspace` skill for supported agents. A user
+can ask Claude or Codex to configure a profile in plain language. The agent will
+ask exploratory questions one at a time about:
+
+- the type of work and repositories
+- tools and persistent windows
+- editor placement
+- knowledge-base routing
+- preferred explanation style, pacing, and pushback
+- private context that belongs only to the profile
+
+It then separates runtime config, workspace YAML, and agent `context.md`, shows
+the proposed changes, validates the layout, and previews it before applying.
 
 ## Knowledge bases
 

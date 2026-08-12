@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="${EOS_ROOT:-$HOME/personal/eos}"
 source "$ROOT/scripts/lib-eos-config.sh"
 
-scripts=(backend research paper algo leetcode write agents eos install-agent-clis install-codex-work-mcps install-antigravity-mcps codex-work codex-personal claude-personal opencode-personal opencode-work opencode-default codex-work-kb-capture codex-work-kb-pending-reminder antigravity-full)
+scripts=(backend research paper algo leetcode write agents eos eos-workspace install-agent-clis install-codex-work-mcps install-antigravity-mcps codex-work codex-personal claude-personal opencode-personal opencode-work opencode-default codex-work-kb-capture codex-work-kb-pending-reminder antigravity-full)
 
 for script in "${scripts[@]}"; do
   path="$ROOT/scripts/$script"
@@ -22,6 +22,8 @@ done
 "$ROOT/scripts/write" --dry-run >/dev/null
 "$ROOT/scripts/agents" --dry-run >/dev/null
 "$ROOT/scripts/eos" algo --dry-run >/dev/null
+"$ROOT/scripts/eos" workspace validate backend >/dev/null
+"$ROOT/scripts/eos" workspace preview backend >/dev/null
 
 backend_output="$("$ROOT/scripts/backend" --dry-run)"
 [[ "$backend_output" == *"window=editor:nvim \"$EOS_BACKEND_DIR\""* ]]

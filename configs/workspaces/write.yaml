@@ -1,0 +1,8 @@
+schema_version: 1
+session: write
+directory: $EOS_PERSONAL_KNOWLEDGE_ROOT
+mode: tmux
+windows:
+  - { name: editor, command: nvim }
+  - { name: notes, command: zsh }
+  - { name: shell, command: zsh }
