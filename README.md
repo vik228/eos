@@ -1,135 +1,22 @@
 # EOS
 
-EOS is a personal engineering operating system for running a reproducible,
-agent-native development environment on macOS.
+EOS is an agent-configured engineering environment for people who work across
+code, research, writing, and long-running AI sessions.
 
-It started as dotfiles and workspace automation. It now manages the complete
-local workflow around them: terminal workspaces, Neovim, isolated AI-agent
-profiles, shared instructions, governed knowledge, session lifecycle, bug
-investigations, bootstrap, and verification.
+It turns a fresh macOS machine into a reproducible workspace with persistent
+terminal sessions, Neovim, isolated agent profiles, shared instructions, and a
+governed knowledge base. Instead of manually editing a collection of dotfiles,
+you describe how you work and an agent builds a validated local profile for
+you.
 
-The goal is simple: a new shell, editor, agent session, or machine should enter
-the same known operating environment instead of relying on remembered setup or
-agent-specific state.
+Today that experience starts in Claude or Codex from the terminal. The longer
+term direction is to make the same guided setup available through agent-harness
+web and app interfaces, so using EOS does not require shell or YAML knowledge.
 
-## What EOS Owns
+## Quick Start
 
-### Reproducible workstation configuration
-
-- Modular configuration for zsh, Git, tmux, WezTerm, Neovim, and Starship.
-- Homebrew dependencies declared in one Brewfile.
-- Idempotent bootstrap with backups before replacing existing files.
-- Directory-aware work and personal Git identities.
-- Shell-based verification of tools, links, profiles, workflows, and behavior.
-
-### Persistent, intent-based workspaces
-
-Semantic commands create or attach to tmux workspaces for backend engineering,
-research, papers, algorithm practice, writing, and agent coordination:
-
-```bash
-backend
-research
-paper
-algo
-leetcode
-write
-agents
-```
-
-tmux owns persistent processes and project state. WezTerm owns rendering and OS
-integration. Neovim remains the editor rather than becoming the lifecycle owner
-for long-running agents.
-
-### Agent-native development
-
-EOS provides isolated default, work, and personal profiles for Claude, Codex,
-and OpenCode, plus shared configuration for Gemini-compatible tools and
-Antigravity.
-
-It renders one cross-agent instruction baseline that covers:
-
-- repository and knowledge routing
-- engineering and collaboration rules
-- discussion behavior across every repository and session
-- bug-investigation gates
-- knowledge proposal and approval rules
-- language, attribution, and safety invariants
-
-Claude lifecycle hooks refresh critical instructions after session start and
-context compaction. Agent launchers select the correct profile, workspace, KB,
-permissions, and lifecycle behavior instead of depending on manual flags.
-
-### Governed shared knowledge
-
-EOS includes a Markdown-canonical knowledge system used across supported
-agents. Markdown remains the source of truth; indexes, audit state, session
-records, and approval records are derived or auditable state.
-
-The `kb` CLI supports:
-
-- budgeted context retrieval and search
-- freshness and source-drift auditing
-- explicit `propose -> review -> promote` governance
-- session start, checkpoint, recovery, and completion
-- structured bug investigations with E2E evidence requirements
-- migration planning, approval binding, verification, and rollback
-- subject-aware pending queues for work and personal knowledge
-
-One EOS-owned capture pipeline serves Claude and Codex across profiles. It
-routes proposals by subject, suppresses duplicate event captures, adds valid
-log frontmatter, and limits SessionStart reminders to the active profile's KB.
-
-Stable knowledge cannot be silently rewritten by an agent. Pending queues and
-logs remain writable working registers; curated knowledge changes require
-explicit approval.
-
-See [Agent Knowledge System](docs/AGENT_KNOWLEDGE_SYSTEM.md) for the operating
-model and [Agent Knowledge Base](docs/AGENT_KNOWLEDGE.md) for installed profiles
-and paths.
-
-### Focused Neovim workflows
-
-The LazyVim-based configuration adds practical local workflows without making
-Neovim responsible for the whole environment:
-
-- notebook-style Python cells and inline Jupyter output
-- agent terminals opened inside the editor when useful
-- Markdown preview with Glow and automatic refresh
-- project navigation, Git, diagnostics, testing, and terminal shortcuts
-
-See [Neovim Cheat Sheet](docs/NEOVIM_CHEATSHEET.md),
-[Keybindings](docs/KEYBINDINGS.md), and [Notebooks](docs/NOTEBOOKS.md).
-
-## Architecture
-
-```text
-brew/           Homebrew dependency manifest
-configs/        Tool, agent, KB, editor, and launchd configuration
-scripts/        Semantic workspaces, agent launchers, KB tools, and installers
-bootstrap/      Idempotent installation and full verification
-tests/          Shell E2E checks and KB Python test suite
-kb/             The Python knowledge-system package and CLI
-docs/           Daily workflows, keybindings, migration, and system design
-adr/            Architecture decisions
-```
-
-The main ownership boundaries are:
-
-1. `configs/` declares the desired local environment.
-2. `scripts/` exposes stable user-facing commands and lifecycle automation.
-3. `bootstrap/` installs that state safely into the home directory.
-4. `tests/` and `bootstrap/verify.sh` validate the workstation contract.
-5. `kb/` provides durable, cross-agent context without private memory copies.
-
-## Installation
-
-EOS currently targets macOS on Apple Silicon and expects Homebrew at
-`/opt/homebrew/bin/brew`.
-
-### Recommended: agent-assisted setup
-
-A new user who already has Claude or Codex installed only needs:
+EOS currently supports macOS on Apple Silicon. Install Claude or Codex, then
+run:
 
 ```bash
 git clone https://github.com/vik228/eos.git ~/personal/eos
@@ -137,190 +24,182 @@ cd ~/personal/eos
 scripts/eos setup
 ```
 
-EOS detects the available agents, asks which one to use when both exist,
-installs the shared instructions and complete skill packages, and launches a
-fresh agent session with `branching-discussion` and
-`configure-eos-workspace`. The agent then asks one question at a time, builds a
-custom profile, shows the proposed files and workspace preview, obtains
-approval, and runs full bootstrap and verification.
+EOS detects the available agent, installs the required instructions and skills,
+and starts a guided setup conversation. The agent asks one question at a time,
+shows the proposed environment and workspace layout, and waits for approval
+before applying anything.
 
-Choose explicitly when desired:
+If both agents are installed, choose one explicitly when needed:
 
 ```bash
 scripts/eos setup --agent claude
 scripts/eos setup --agent codex
 ```
 
-No YAML or profile-directory knowledge is required.
+## What the Result Can Look Like
 
-### Manual setup
+Consider an AI/ML engineer who moves between product development, model
+research, and technical writing.
 
-```bash
-git clone <repository-url> ~/personal/eos
-cd ~/personal/eos
-cp eos.local.example .eos.local
-$EDITOR .eos.local
-bootstrap/bootstrap.sh
-source ~/.zshrc
-eos doctor
-```
+Their EOS installation could provide three independent profiles:
 
-Bootstrap is idempotent. Any replaced file is backed up under:
+- `work` opens the product repository, Neovim, service terminals, logs, and a
+  work agent connected only to the work knowledge base and Git identity.
+- `research` opens a paper implementation, notebook workflow, experiment
+  terminals, research notes, and an agent tuned for first-principles
+  discussion.
+- `writing` opens Markdown notes with live preview and an agent configured for
+  concise editing rather than software implementation.
 
-```text
-~/personal/eos/backups/<timestamp>/
-```
+Each workspace can be resumed after the terminal closes because tmux owns its
+processes and state. The profiles can use different repositories, tools,
+identities, knowledge roots, agent instructions, and layouts without changing
+the public EOS repository.
 
-For more detail, see [Installation](INSTALL.md) and [Bootstrap](BOOTSTRAP.md).
-
-Copy `eos.local.example` to the ignored `.eos.local` file before bootstrap to
-set identity, project paths, KB roots, and workspace routing. See
-[Customization](docs/CUSTOMIZATION.md).
-
-Named user-owned profiles can then layer different work, personal, research,
-or organization-specific settings and agent context without modifying EOS.
+Typical launch commands remain simple:
 
 ```bash
-eos profile init work
-eos profile init research
+EOS_PROFILE=work backend
 EOS_PROFILE=research research
+EOS_PROFILE=writing write
 ```
 
-Each profile has a private `config` overlay and `context.md` for agent-specific
-instructions. For example, a research profile can change its repository, Git
-identity, KB route, and choose whether Neovim runs inside tmux:
+The names are examples, not fixed roles. A user can create profiles for their
+own projects, teams, learning tracks, or personal workflows.
 
-```bash
-EOS_RESEARCH_DIR="$HOME/research/my-project"
-EOS_RESEARCH_PROJECT_SLUG="my-research"
-EOS_RESEARCH_TMUX=1
-```
+## What You Can Customize
 
-Workspace composition is declarative too. A profile can inherit an EOS layout
-or define its own ordered windows and commands in YAML, then validate and
-preview it before launch:
+### How agents work with you
 
-```bash
-EOS_PROFILE=research eos workspace validate research
-EOS_PROFILE=research eos workspace preview research
-```
+Choose how agents explain, challenge, pace, and structure their responses.
+Profiles can carry different private context while still inheriting shared
+safety, discussion, bug-investigation, and knowledge-management rules.
 
-The installed `configure-eos-workspace` agent skill can interview a user about
-their tools, layout, KB routing, and preferred agent response style, then build
-the profile without requiring them to write YAML manually.
+### What opens together
 
-After bootstrap, restart Claude or Codex so it discovers the installed skill.
-Then start with either:
+Define the tools and views that belong to a workflow: repositories, editors,
+shells, notebooks, logs, previews, services, or agents. Workspaces are
+declarative, validated before launch, and can inherit an existing layout with
+small changes.
 
-```text
-Codex:  Use $configure-eos-workspace to set up a research profile for me.
-Claude: Use the configure-eos-workspace skill to set up a research profile for me.
-```
+### Where knowledge lives
 
-The agent asks one question at a time, shows the proposed profile and workspace
-layout, runs validation and preview, and asks before applying it. Launch the
-result with the command it reports, for example:
+Route work and personal knowledge separately. Agents retrieve relevant context
+from Markdown, capture reviewable suggestions, and require explicit approval
+before changing curated knowledge. Pending reminders stay inside the active
+profile, so a work session does not expose personal queues.
 
-```bash
-EOS_PROFILE=research research
-```
+### Which identity and repositories apply
 
-On an existing EOS installation, update and reinstall skills first:
+Set Git identity, project directories, knowledge roots, agent environment, and
+private context per profile. Machine-specific and personal values stay in
+ignored local files rather than the public repository.
 
-```bash
-git pull
-scripts/install-agent-instructions
-```
+The guided setup handles these choices without requiring users to understand
+the underlying profile files or workspace YAML. Advanced users can configure
+the same system directly. See [Customization](docs/CUSTOMIZATION.md).
+
+## What EOS Includes
+
+### Agent-native workflows
+
+- Isolated default, work, and personal environments for Claude, Codex, and
+  OpenCode, with shared support for Gemini-compatible tools and Antigravity.
+- One rendered instruction baseline across supported agents.
+- Mandatory workflows for exploratory discussions, bug investigation, and
+  governed knowledge changes.
+- Lifecycle hooks that refresh critical behavior and capture reviewable session
+  learnings.
+
+### Persistent workspaces
+
+- Intent-based commands such as `backend`, `research`, `paper`, `algo`,
+  `write`, and `agents`.
+- tmux-owned sessions that survive terminal and editor restarts.
+- Declarative layouts that can be validated and previewed before launch.
+- Clear ownership boundaries: tmux manages processes, WezTerm renders the
+  terminal, and Neovim remains the editor.
+
+### Governed shared knowledge
+
+- Markdown as the durable source of truth rather than private agent memory.
+- Budgeted retrieval, search, freshness checks, and source-drift auditing.
+- Explicit `propose -> review -> promote` governance for stable changes.
+- Subject-aware capture with duplicate suppression and profile-scoped pending
+  queues.
+- Structured session and bug-investigation lifecycles.
+
+### Focused Neovim workflows
+
+- Notebook-style Python cells with inline Jupyter output.
+- Markdown preview in a separate Neovim tab with automatic refresh.
+- Agent terminals, project navigation, Git, diagnostics, testing, and terminal
+  shortcuts.
+
+### Reproducible local configuration
+
+- Modular zsh, Git, tmux, WezTerm, Neovim, and Starship configuration.
+- Homebrew dependencies declared in one Brewfile.
+- Idempotent bootstrap with backups before replacing existing files.
+- Verification for tools, symlinks, profiles, workspaces, hooks, and editor
+  behavior.
+
+## Current Scope
+
+EOS is opinionated software, not a universal dotfiles framework. It currently
+targets macOS on Apple Silicon and expects Homebrew under
+`/opt/homebrew/bin/brew`. The defaults reflect an agent-heavy terminal workflow,
+but identities, repositories, profiles, knowledge routes, agent behavior, and
+workspace composition are designed to be replaced locally.
+
+The terminal-based agent interview is the current onboarding interface.
+Web/app onboarding and broader platform support are future work, not current
+features. See the [Roadmap](ROADMAP.md).
 
 ## Daily Use
 
-Start or resume the main engineering workspace:
+Launch or resume a workspace:
 
 ```bash
 backend
+research
+write
 ```
 
-Inspect a workspace layout without opening tmux:
+Preview a layout without opening it:
 
 ```bash
-backend --dry-run
+EOS_PROFILE=research eos workspace preview research
 ```
 
-Use another backend repository for one launch:
-
-```bash
-EOS_BACKEND_DIR="$HOME/work/other-backend" backend
-```
-
-Run knowledge operations through EOS:
+Inspect knowledge or verify the installation:
 
 ```bash
 eos kb context "task or symptom" --budget 2500
 eos kb audit
-eos kb status
-```
-
-Check or repair the installed environment:
-
-```bash
 eos doctor
-bootstrap/verify.sh
 ```
 
-The complete working loop is documented in the
-[Productivity Guide](docs/PRODUCTIVITY.md).
-
-## Core Toolchain
-
-EOS currently integrates zsh, Homebrew, Git, tmux, WezTerm, Neovim/LazyVim,
-Starship, uv, Python, Node, mise, fzf, ripgrep, fd, bat, eza, zoxide, jq, yq,
-tree, lazygit, gh, btop, direnv, Glow, and the configured AI-agent CLIs.
-
-## Design Principles
-
-- Everything important is declared as code.
-- Bootstrap and installers must be safe to rerun.
-- Persistent work belongs in tmux; rendering belongs in WezTerm.
-- Agent behavior should be shared, explicit, and testable.
-- Durable knowledge belongs in the shared KB, not private agent memory.
-- Stable knowledge changes require human approval.
-- Bugs are reproduced from the user-visible path before implementation.
-- Work and personal identities, credentials, agents, and knowledge stay
-  separated by profile.
-- Correctness, robustness, and maintainability outrank setup convenience.
-
-## Verification
-
-Run the full repository and installed-state checks with:
-
-```bash
-bootstrap/verify.sh
-```
-
-The suite checks bootstrap idempotence, symlinks, workspace commands, Git
-profiles, agent launchers and instruction rendering, Claude hooks, KB lifecycle,
-MCP installation, notebook behavior, and Neovim integrations.
-
-KB package tests can also be run directly:
-
-```bash
-cd kb
-uv run pytest
-```
-
-See [Testing](TESTING.md) for focused test commands.
+See the [Productivity Guide](docs/PRODUCTIVITY.md) for the complete working
+loop.
 
 ## Documentation
 
-- [Architecture](ARCHITECTURE.md)
-- [Productivity Guide](docs/PRODUCTIVITY.md)
-- [Agent Knowledge System](docs/AGENT_KNOWLEDGE_SYSTEM.md)
-- [Agent Profiles and Knowledge Paths](docs/AGENT_KNOWLEDGE.md)
-- [Keybindings](docs/KEYBINDINGS.md)
-- [Neovim Cheat Sheet](docs/NEOVIM_CHEATSHEET.md)
-- [Notebook Workflow](docs/NOTEBOOKS.md)
-- [Migration and Recovery](docs/MIGRATION.md)
-- [Customization](docs/CUSTOMIZATION.md)
-- [Open-source Release Checklist](docs/OPEN_SOURCE_RELEASE.md)
-- [Roadmap](ROADMAP.md)
-- [Contributing](CONTRIBUTING.md)
+- Start here: [Installation](INSTALL.md) and
+  [Agent-assisted customization](docs/CUSTOMIZATION.md)
+- Everyday workflows: [Productivity Guide](docs/PRODUCTIVITY.md),
+  [Keybindings](docs/KEYBINDINGS.md), and
+  [Neovim Cheat Sheet](docs/NEOVIM_CHEATSHEET.md)
+- Editor workflows: [Notebook Workflow](docs/NOTEBOOKS.md)
+- Agent and knowledge model:
+  [Agent Knowledge System](docs/AGENT_KNOWLEDGE_SYSTEM.md) and
+  [Agent Profiles and Knowledge Paths](docs/AGENT_KNOWLEDGE.md)
+- Internals and recovery: [Architecture](ARCHITECTURE.md),
+  [Bootstrap](BOOTSTRAP.md), [Testing](TESTING.md), and
+  [Migration](docs/MIGRATION.md)
+- Project direction: [Roadmap](ROADMAP.md),
+  [Contributing](CONTRIBUTING.md), and [Changelog](CHANGELOG.md)
+
+## License
+
+EOS is available under the [MIT License](LICENSE).
