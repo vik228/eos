@@ -1,0 +1,53 @@
+name: Bug report
+description: Report a reproducible EOS problem
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: Do not include credentials, private repository details, or employer/customer information.
+  - type: textarea
+    id: symptom
+    attributes:
+      label: What happened?
+      description: Describe the user-visible symptom.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: Provide the smallest reliable sequence of commands or actions.
+      placeholder: |
+        1. Run ...
+        2. Open ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version and hardware
+      placeholder: macOS 15.x, Apple Silicon
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Relevant diagnostics
+      description: Paste sanitized output from eos doctor or focused checks.
+      render: shell
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Public-data check
+      options:
+        - label: I removed secrets and private organizational or machine-specific information.
+          required: true
