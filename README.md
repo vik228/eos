@@ -177,6 +177,29 @@ The installed `configure-eos-workspace` agent skill can interview a user about
 their tools, layout, KB routing, and preferred agent response style, then build
 the profile without requiring them to write YAML manually.
 
+After bootstrap, restart Claude or Codex so it discovers the installed skill.
+Then start with either:
+
+```text
+Codex:  Use $configure-eos-workspace to set up a research profile for me.
+Claude: Use the configure-eos-workspace skill to set up a research profile for me.
+```
+
+The agent asks one question at a time, shows the proposed profile and workspace
+layout, runs validation and preview, and asks before applying it. Launch the
+result with the command it reports, for example:
+
+```bash
+EOS_PROFILE=research research
+```
+
+On an existing EOS installation, update and reinstall skills first:
+
+```bash
+git pull
+scripts/install-agent-instructions
+```
+
 ## Daily Use
 
 Start or resume the main engineering workspace:

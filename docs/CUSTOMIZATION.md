@@ -163,6 +163,49 @@ ask exploratory questions one at a time about:
 It then separates runtime config, workspace YAML, and agent `context.md`, shows
 the proposed changes, validates the layout, and previews it before applying.
 
+### First-time use
+
+Bootstrap installs the skill into all supported agent profiles:
+
+```bash
+bootstrap/bootstrap.sh
+```
+
+Restart the agent after installation so it refreshes its skill catalog. Invoke
+the skill explicitly or describe the same intent naturally:
+
+```text
+Use $configure-eos-workspace to create a work profile for backend development.
+
+Use the configure-eos-workspace skill to create a research setup. I want
+Neovim, Python, notes, and one agent, and I prefer short first-principles
+explanations.
+```
+
+Codex recognizes the `$configure-eos-workspace` form. In Claude, ask it to use
+the named skill directly. The description also allows either agent to trigger
+it from a natural request such as "customize my EOS workspace."
+
+The user only needs to answer the questions and approve the proposed files. The
+agent handles:
+
+1. Creating or selecting the named profile.
+2. Writing profile values and private response preferences.
+3. Creating the declarative workspace YAML.
+4. Running `eos workspace validate`.
+5. Showing `eos workspace preview`.
+6. Installing updated agent instructions when `context.md` changed.
+7. Returning the exact launch command.
+
+For an existing clone that has just received the skill, run:
+
+```bash
+git pull
+scripts/install-agent-instructions
+```
+
+Then restart Claude or Codex before invoking it.
+
 ## Knowledge bases
 
 Tracked KB files are generic scaffolds. Bootstrap does not overwrite an existing
