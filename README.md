@@ -126,6 +126,8 @@ EOS currently targets macOS on Apple Silicon and expects Homebrew at
 ```bash
 git clone <repository-url> ~/personal/eos
 cd ~/personal/eos
+cp eos.local.example .eos.local
+$EDITOR .eos.local
 bootstrap/bootstrap.sh
 source ~/.zshrc
 eos doctor
@@ -145,6 +147,26 @@ set identity, project paths, KB roots, and workspace routing. See
 
 Named user-owned profiles can then layer different work, personal, research,
 or organization-specific settings and agent context without modifying EOS.
+
+```bash
+eos profile init work
+eos profile init research
+EOS_PROFILE=research research
+```
+
+Each profile has a private `config` overlay and `context.md` for agent-specific
+instructions. For example, a research profile can change its repository, Git
+identity, KB route, and choose whether Neovim runs inside tmux:
+
+```bash
+EOS_RESEARCH_DIR="$HOME/research/my-project"
+EOS_RESEARCH_PROJECT_SLUG="my-research"
+EOS_RESEARCH_TMUX=1
+```
+
+Machine defaults and named profiles are configurable. Workspace window
+composition is currently defined by tracked scripts such as `scripts/backend`
+and `scripts/research`; see the customization guide for that boundary.
 
 ## Daily Use
 
