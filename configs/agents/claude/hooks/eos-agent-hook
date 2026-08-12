@@ -58,13 +58,28 @@ except Exception: print("")')"
       explicit_root="${EOS_KB_ROOT:-}"
       for knowledge_root in "$explicit_root" "$personal_root" "$work_root"; do
         [[ -n "$knowledge_root" ]] || continue
-        if [[ "$file_path" == "$knowledge_root"/*.md || "$file_path" == "$knowledge_root"/*/*.md || "$file_path" == "$knowledge_root"/*/*/*.md || "$file_path" == "$knowledge_root"/*/*/*/*.md ]]; then
-          relative="${file_path#"$knowledge_root"/}"
-          if [[ "$relative" != logs/* && "$relative" != */_pending-kb-updates.md && "$relative" != _pending-kb-updates.md ]]; then
+        path_class="$(python3 - "$knowledge_root" "$file_path" <<'PY'
+import pathlib, sys
+root = pathlib.Path(sys.argv[1]).expanduser().resolve()
+path = pathlib.Path(sys.argv[2]).expanduser().resolve()
+try:
+    relative = path.relative_to(root)
+except ValueError:
+    print("outside")
+else:
+    posix = relative.as_posix()
+    if path.suffix != ".md":
+        print("outside")
+    elif posix.startswith("logs/") or relative.name == "_pending-kb-updates.md":
+        print("allowed")
+    else:
+        print("blocked")
+PY
+)"
+          if [[ "$path_class" == blocked ]]; then
             emit_block "Direct writes to stable KB Markdown are prohibited. Use kb propose, obtain explicit review, then run kb promote. Only logs/ and _pending-kb-updates.md are working-register exceptions."
             exit 0
           fi
-        fi
       done
     fi
     command_text="$(printf '%s' "$payload" | python3 -c 'import json,sys
@@ -131,10 +146,19 @@ except Exception: print("")')"
     ;;
   SessionStart)
     if [[ -x "$kb" ]]; then "$kb" audit "${kb_args[@]}" --source-root "${PWD:-.}" --json >/dev/null 2>&1 || true; fi
-    personal_root="${EOS_PERSONAL_KNOWLEDGE_DIR:-$HOME/personal/knowledge}"
-    reminder="${EOS_ROOT:-$HOME/personal/eos}/scripts/personal-kb-pending-reminder"
-    if [[ -x "$reminder" && ( "${EOS_KB_ROOT:-}" == "$personal_root" || "${PWD:-}" == "$HOME/personal" || "${PWD:-}" == "$HOME/personal/"* ) ]]; then
-      reminder_output="$(EOS_PERSONAL_KNOWLEDGE_DIR="$personal_root" "$reminder" --json 2>/dev/null || true)"
+    personal_root="${EOS_PERSONAL_KNOWLEDGE_DIR:-${EOS_PERSONAL_KNOWLEDGE_ROOT:-$HOME/personal/knowledge}}"
+    work_root="${EOS_WORK_KNOWLEDGE_ROOT:-$HOME/work/knowledge}"
+    active_profile="${EOS_AGENT_PROFILE:-}"
+    active_root="${EOS_KB_ROOT:-}"
+    if [[ -z "$active_profile" ]]; then
+      case "${PWD:-}" in "$HOME/work"|"$HOME/work/"*) active_profile=work ;; "$HOME/personal"|"$HOME/personal/"*) active_profile=personal ;; esac
+    fi
+    if [[ -z "$active_root" ]]; then
+      case "$active_profile" in work) active_root="$work_root" ;; personal) active_root="$personal_root" ;; esac
+    fi
+    reminder="${EOS_ROOT:-$HOME/personal/eos}/scripts/eos-kb-pending-reminder"
+    if [[ -x "$reminder" && -n "$active_root" && ( "$active_profile" == work || "$active_profile" == personal ) ]]; then
+      reminder_output="$(EOS_CAPTURE_PROFILE="$active_profile" EOS_CAPTURE_KB_ROOT="$active_root" "$reminder" --json 2>/dev/null || true)"
       if [[ -n "$reminder_output" ]]; then
         printf '%s' "$reminder_output" | jq --arg contract "$discussion_contract" '
           .additional_context = ((.additional_context // "") + "\n" + $contract) |

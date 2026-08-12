@@ -89,7 +89,10 @@ codex-personal; exec zsh
 
 `codex-work` and `codex-personal` are intentionally different from raw `codex`: they start in the right workspace, use full local sandbox access so Git metadata stays writable, keep network access enabled, and add the relevant knowledge-base directory as context. `codex-work` also prints pending work KB proposals before a backend-project session and runs a propose-only KB capture after the Codex process exits.
 
-Personal Claude capture is subject-aware: proposed changes are filed in the pending queue that owns the target path, even when the session was launched from another project directory. Its SessionStart reminder lists all non-empty personal project and area queues.
+Claude and Codex share the same EOS-owned capture behavior. Proposed changes
+are filed in the pending queue that owns the target path, even when the session
+was launched from another project directory. SessionStart reminders are scoped
+to the active profile: work sees work queues, personal sees personal queues.
 
 The trailing `exec zsh` keeps the tmux window open after `/exit`, so you can restart the agent from the same window.
 

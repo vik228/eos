@@ -76,6 +76,10 @@ The `kb` CLI supports:
 - migration planning, approval binding, verification, and rollback
 - subject-aware pending queues for work and personal knowledge
 
+One EOS-owned capture pipeline serves Claude and Codex across profiles. It
+routes proposals by subject, suppresses duplicate event captures, adds valid
+log frontmatter, and limits SessionStart reminders to the active profile's KB.
+
 Stable knowledge cannot be silently rewritten by an agent. Pending queues and
 logs remain writable working registers; curated knowledge changes require
 explicit approval.

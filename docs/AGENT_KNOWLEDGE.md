@@ -39,11 +39,21 @@ For `$HOME/work/backend-project`, agents must also read repo-local rules before 
 
 Agents should read the personal top-level index first for personal writing, learning, research, tooling, and non-work coding tasks. The personal KB uses the same router pattern as the work KB: the root index points to project, area, and pattern indexes, while the root pending index points to project-specific or area-specific pending queues.
 
-EOS installs `personal-kb-capture` and `personal-kb-pending-reminder` behind the legacy `genesis-kb-*.sh` hook paths. Capture routes each proposal by its target path to the matching project or area queue. The reminder aggregates every non-empty queue under `projects/` and `areas/`.
+EOS uses `eos-kb-capture` and `eos-kb-pending-reminder` as shared,
+profile-parameterized implementations for Claude and Codex. Compatibility
+wrappers and legacy `genesis-kb-*.sh` / `nova-kb-*.sh` paths route into these
+EOS-owned scripts. Capture routes each proposal by its target path, emits valid
+log frontmatter, and suppresses duplicate event captures. Reminders aggregate
+only the active profile's KB root, so work sessions never surface personal
+queues and personal sessions never surface work queues.
 
 Capture also normalizes open checkbox blocks and removes repeats before and after each headless capture. Multiline proposals are compared after whitespace normalization, so PreCompact and SessionEnd cannot keep appending the same open item.
 
-Claude's global pre-tool hook blocks direct Write/Edit operations against stable KB Markdown. `logs/` and `_pending-kb-updates.md` remain writable working registers. Stable concepts must move through `kb propose`, explicit `kb review`, and `kb promote`.
+Claude's global pre-tool hook resolves target paths relative to each configured
+KB root and blocks direct Write/Edit operations against stable KB Markdown at
+any depth. `logs/` and `_pending-kb-updates.md` remain explicitly writable
+working registers. Stable concepts must move through `kb propose`, explicit
+`kb review`, and `kb promote`.
 
 Every discussion uses the same interaction contract across repositories and profiles. The rendered instructions carry it to every supported agent. Claude additionally refreshes it at SessionStart and PostCompact; project-specific rules are layered only when relevant.
 

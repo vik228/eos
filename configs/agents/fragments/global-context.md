@@ -6,7 +6,7 @@
 - Repository instructions are authoritative for the repository being changed.
 - Durable knowledge belongs in the shared KB, never private agent memory or scratchpads.
 - Review pending KB proposals with the user before applying stable changes.
-- Route every pending proposal by its target subject, not by the current working directory. Read all registered non-empty pending queues at session start.
+- Route every pending proposal by its target subject, not by the current working directory. At session start, read all registered non-empty queues only from the active profile's KB root: work sessions read work queues and personal sessions read personal queues.
 
 Relevant skills:
 - `configs/agents/skills/branching-discussion/SKILL.md`

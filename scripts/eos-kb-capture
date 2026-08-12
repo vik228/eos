@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+[[ -z "${EOS_KB_CAPTURE_RUNNING:-}" ]] || exit 0
+
+event="${1:-SessionEnd}"
+transcript="${2:-}"
+input=""
+if [[ -z "$transcript" ]]; then
+  input="$(cat)"
+  transcript="$(printf '%s' "$input" | jq -r '.transcript_path // .agent_transcript_path // empty' 2>/dev/null || true)"
+fi
+reason="$(printf '%s' "$input" | jq -r '.reason // .trigger // empty' 2>/dev/null || true)"
+session_id="$(printf '%s' "$input" | jq -r '.session_id // "nosid"' 2>/dev/null || printf nosid)"
+
+profile="${EOS_CAPTURE_PROFILE:-${EOS_AGENT_PROFILE:-auto}}"
+agent="${EOS_CAPTURE_AGENT:-claude}"
+kb="${EOS_CAPTURE_KB_ROOT:-${EOS_KB_ROOT:-}}"
+workspace="${EOS_CAPTURE_WORKSPACE_ROOT:-}"
+project_slug="${EOS_CAPTURE_PROJECT_SLUG:-}"
+
+session_cwd="$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null || true)"
+if [[ -z "$session_cwd" && -n "$transcript" && -f "$transcript" ]]; then
+  session_cwd="$(head -n 10 "$transcript" | jq -r 'select(.type == "session_meta") | .payload.cwd // empty' 2>/dev/null | head -n 1 || true)"
+fi
+session_cwd="${session_cwd:-${PWD:-}}"
+
+if [[ "$profile" == auto ]]; then
+  case "$session_cwd" in
+    "$HOME/work"|"$HOME/work/"*) profile=work ;;
+    "$HOME/personal"|"$HOME/personal/"*) profile=personal ;;
+    *) exit 0 ;;
+  esac
+fi
+case "$profile" in
+  work)
+    kb="${kb:-${EOS_WORK_KNOWLEDGE_ROOT:-$HOME/work/knowledge}}"
+    workspace="${workspace:-${EOS_BACKEND_DIR:-$HOME/work}}"
+    ;;
+  personal)
+    kb="${kb:-${EOS_PERSONAL_KNOWLEDGE_ROOT:-$HOME/personal/knowledge}}"
+    workspace="${workspace:-$HOME/personal}"
+    ;;
+  *) echo "EOS_CAPTURE_PROFILE must be work, personal, or auto" >&2; exit 2 ;;
+esac
+
+debug="$kb/logs/.hook-debug.log"
+log_debug() {
+  mkdir -p "$(dirname "$debug")"
+  printf '%s [%s profile=%s reason=%s sid=%s] %s\n' "$(date -u +%FT%TZ)" "$event" "$profile" "${reason:-n/a}" "$session_id" "$*" >>"$debug"
+}
+
+[[ -n "$transcript" && -f "$transcript" ]] || {
+  [[ -z "${DRY_RUN:-}" ]] || echo "skip: transcript missing: ${transcript:-empty}"
+  log_debug "transcript missing"
+  exit 0
+}
+
+if [[ -n "$workspace" ]]; then
+  case "$session_cwd" in "$workspace"|"$workspace/"*) ;; *) exit 0 ;; esac
+fi
+if [[ "$event" == SessionEnd && -n "$reason" ]]; then
+  case "$reason" in clear|logout) ;; *) log_debug "skip uninteresting reason"; exit 0 ;; esac
+fi
+if [[ -z "${DRY_RUN:-}" && "$session_id" != nosid ]]; then
+  marker="$kb/logs/.capture-seen-$event-$session_id"
+  mkdir -p "$(dirname "$marker")"
+  mkdir "$marker" 2>/dev/null || { log_debug "skip event already captured"; exit 0; }
+fi
+date_value="$(date +%F)"
+year="${date_value%%-*}"
+stale_after="$(date -v+3m +%F 2>/dev/null || date -d '+3 months' +%F)"
+log_dir="$kb/logs/$year"
+mkdir -p "$log_dir"
+
+queues=()
+while IFS= read -r queue; do queues+=("$queue"); done < <(
+  find "$kb" -type f -name '_pending-kb-updates.md' 2>/dev/null | LC_ALL=C sort
+)
+queue_list="$(printf '%s\n' "${queues[@]}")"
+if [[ -n "$project_slug" && -f "$kb/projects/$project_slug/_pending-kb-updates.md" ]]; then
+  suggested_queue="$kb/projects/$project_slug/_pending-kb-updates.md"
+else
+  suggested_queue="route by target path"
+fi
+
+read -r -d '' prompt <<PROMPT_EOF || true
+You are the EOS $profile KB session-capture agent. Read this transcript:
+
+$transcript
+
+Write only a concise dated log under $log_dir and reviewable checkbox proposals to the correct pending queues.
+
+Every NEW log must start with this frontmatter:
+---
+title: $date_value - <short human title>
+type: Log
+date: $date_value
+status: stable
+stale_after: "$stale_after"
+---
+
+Available queues for this $profile profile only:
+$queue_list
+
+Preferred project queue when the subject matches: $suggested_queue
+
+Route each proposal by its target path. Different subjects may require different queues. If no registered queue matches, append a warning item to $kb/_pending-kb-updates.md instead of guessing.
+
+Hard rules:
+- Never edit a stable KB concept or any memory directory.
+- Write only under logs/ and append only to _pending-kb-updates.md files.
+- Read the open checkboxes in the target queue first and do not append an item that is already open.
+- Each proposal must name its target path and concrete change.
+- Keep total output under 80 lines.
+PROMPT_EOF
+
+if [[ -n "${DRY_RUN:-}" ]]; then
+  printf 'would run: agent=%s profile=%s\n%s\n' "$agent" "$profile" "$prompt"
+  exit 0
+fi
+
+dedupe="${EOS_ROOT:-$HOME/personal/eos}/scripts/dedupe-pending-kb-queues"
+[[ ! -x "$dedupe" ]] || "$dedupe" "$kb" >/dev/null
+log_debug "capturing transcript"
+case "$agent" in
+  claude)
+    claude_bin="${CLAUDE_BIN:-$(command -v claude || printf '/usr/local/bin/claude')}"
+    EOS_KB_CAPTURE_RUNNING=1 "$claude_bin" -p "$prompt" --allowedTools Read Write Edit --permission-mode acceptEdits >>"$debug" 2>&1 || log_debug "capture command failed"
+    ;;
+  codex)
+    codex_home="${CODEX_CAPTURE_HOME:-${CODEX_HOME:-$HOME/.codex-$profile}}"
+    EOS_KB_CAPTURE_RUNNING=1 CODEX_HOME="$codex_home" codex exec --cd "$kb" --sandbox workspace-write --add-dir "$kb" --ask-for-approval never "$prompt" >>"$debug" 2>&1 || log_debug "capture command failed"
+    ;;
+  *) echo "EOS_CAPTURE_AGENT must be claude or codex" >&2; exit 2 ;;
+esac
+[[ ! -x "$dedupe" ]] || "$dedupe" "$kb" >>"$debug" 2>&1

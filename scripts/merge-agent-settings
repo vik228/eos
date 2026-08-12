@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="${EOS_ROOT:-$HOME/personal/eos}"
 fragment="$ROOT/configs/agents/claude/settings.fragment.json"
 hook="$ROOT/configs/agents/claude/hooks/eos-agent-hook"
-capture="$ROOT/scripts/personal-kb-capture"
+capture="$ROOT/scripts/eos-kb-capture"
 [[ -f "$fragment" && -x "$hook" && -x "$capture" ]] || { echo "Claude settings sources are missing" >&2; exit 1; }
 
 merge_one() {
@@ -20,6 +20,18 @@ except (OSError, json.JSONDecodeError) as exc:
 frag = json.loads(fragment.read_text())
 data.setdefault("attribution", {}).update(frag["attribution"])
 hooks = data.setdefault("hooks", {})
+for event in ("PreCompact", "SessionEnd"):
+    cleaned = []
+    for entry in hooks.get(event, []):
+        retained = [
+            hook for hook in entry.get("hooks", [])
+            if "scripts/personal-kb-capture" not in hook.get("command", "")
+        ]
+        if retained:
+            item = dict(entry)
+            item["hooks"] = retained
+            cleaned.append(item)
+    hooks[event] = cleaned
 for event, entries in frag["hooks"].items():
     rendered = json.loads(
         json.dumps(entries)

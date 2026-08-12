@@ -33,6 +33,15 @@ printf '%s\n' '# Pending' '' '- [ ] Review me.' >"$tmp/kb-root/projects/eos/_pen
 session_start="$(event SessionStart '{"hook_event_name":"SessionStart"}')"
 grep -q 'pending personal KB proposal' <<<"$session_start"
 grep -q 'Every discussion uses the global interaction contract' <<<"$session_start"
+mkdir -p "$tmp/work-kb/projects/nova"
+printf '%s\n' '# Pending' '' '- [ ] Work only.' >"$tmp/work-kb/projects/nova/_pending-kb-updates.md"
+work_start="$(printf '%s' '{"hook_event_name":"SessionStart"}' | \
+  EOS_KB_BIN="$tmp/kb" HOOK_TEST_LOG="$log" EOS_KB_ROOT="$tmp/work-kb" \
+  EOS_WORK_KNOWLEDGE_ROOT="$tmp/work-kb" EOS_PERSONAL_KNOWLEDGE_DIR="$tmp/kb-root" \
+  EOS_AGENT_PROFILE=work EOS_AGENT_SESSION_ID=s1 "$HOOK" SessionStart)"
+grep -q 'pending work KB proposal' <<<"$work_start"
+grep -q 'projects/nova/_pending-kb-updates.md' <<<"$work_start"
+! grep -q 'projects/eos/_pending-kb-updates.md' <<<"$work_start"
 event UserPromptSubmit '{"hook_event_name":"UserPromptSubmit","prompt":"fix this regression"}' | grep -q 'kb bug start'
 event UserPromptSubmit '{"hook_event_name":"UserPromptSubmit","prompt":"lets discuss evaluation strategy"}' | grep -q 'Branching discussion detected'
 event UserPromptSubmit '{"hook_event_name":"UserPromptSubmit","prompt":"lets discuss a plan for this regression"}' | grep -q 'branching-discussion/SKILL.md and bug-investigation/SKILL.md'
@@ -42,6 +51,9 @@ kb_write="$(event PreToolUse "{\"hook_event_name\":\"PreToolUse\",\"tool_name\":
 grep -q '"decision": "block"' <<<"$kb_write"
 event PreToolUse "{\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"$tmp/kb-root/projects/eos/_pending-kb-updates.md\"}}" | grep -q '"continue":true'
 event PreToolUse "{\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$tmp/kb-root/logs/session.md\"}}" | grep -q '"continue":true'
+event PreToolUse "{\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$tmp/kb-root/logs/2026/08/nested/session.md\"}}" | grep -q '"continue":true'
+deep_write="$(event PreToolUse "{\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$tmp/kb-root/projects/eos/deep/stable.md\"}}")"
+grep -q '"decision": "block"' <<<"$deep_write"
 event PostToolUse '{"hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"git status"}}' | grep -q '"continue":true'
 event PreCompact '{"hook_event_name":"PreCompact"}' | grep -q '"continue":true'
 event PostCompact '{"hook_event_name":"PostCompact"}' | grep -q 'Every discussion uses the global interaction contract'
@@ -72,8 +84,8 @@ settings = json.loads((home / ".claude/settings.json").read_text())
 assert settings["auth"] == "keep"
 assert settings["attribution"] == {"commit": "", "pr": "", "sessionUrl": False}
 assert all(event in settings["hooks"] for event in ("InstructionsLoaded", "SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PreCompact", "PostCompact", "Stop", "SessionEnd"))
-assert any("scripts/personal-kb-capture" in hook["command"] for entry in settings["hooks"]["PreCompact"] for hook in entry["hooks"])
-assert any("scripts/personal-kb-capture" in hook["command"] for entry in settings["hooks"]["SessionEnd"] for hook in entry["hooks"])
+assert any("scripts/eos-kb-capture" in hook["command"] for entry in settings["hooks"]["PreCompact"] for hook in entry["hooks"])
+assert any("scripts/eos-kb-capture" in hook["command"] for entry in settings["hooks"]["SessionEnd"] for hook in entry["hooks"])
 for relative in (
     ".gemini/skills/knowledge-management",
     ".gemini/antigravity-ide/skills/bug-investigation",

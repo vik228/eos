@@ -51,10 +51,11 @@ cat >"$transcript" <<JSONL
 JSONL
 
 capture_output="$(DRY_RUN=1 EOS_BACKEND_DIR="$project_dir" EOS_WORK_PROJECT_SLUG="$project_slug" EOS_WORK_KNOWLEDGE_ROOT="$kb" "$ROOT/scripts/codex-work-kb-capture" SessionEnd "$transcript")"
-[[ "$capture_output" == *"would run: CODEX_HOME="* ]]
-[[ "$capture_output" == *"codex exec"* ]]
+[[ "$capture_output" == *"would run: agent=codex profile=work"* ]]
 [[ "$capture_output" == *"$transcript"* ]]
 [[ "$capture_output" == *"$pending"* ]]
+[[ "$capture_output" == *"type: Log"* ]]
+[[ "$capture_output" == *"do not append an item that is already open"* ]]
 
 missing_output="$(DRY_RUN=1 EOS_WORK_KNOWLEDGE_ROOT="$kb" "$ROOT/scripts/codex-work-kb-capture" SessionEnd "$tmp_dir/missing.jsonl")"
 [[ "$missing_output" == *"skip: transcript missing"* ]]

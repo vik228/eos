@@ -53,6 +53,8 @@ required_files=(
   scripts/install-agent-instructions
   scripts/install-agent-clis
   scripts/install-work-knowledge-indexes
+  scripts/eos-kb-capture
+  scripts/eos-kb-pending-reminder
   scripts/setup-notebooks
   bin/claude
   knowledge/00-index.md

@@ -35,5 +35,15 @@ install_index() {
 install_index "$ROOT/knowledge/00-index.md" "$TARGET_ROOT/00-index.md"
 install_index "$ROOT/knowledge/_pending-kb-updates.md" "$TARGET_ROOT/_pending-kb-updates.md"
 install_index "$ROOT/knowledge/areas/agent-profile.md" "$TARGET_ROOT/areas/agent-profile.md"
+mkdir -p "$TARGET_ROOT/bin"
+capture_link="$TARGET_ROOT/bin/nova-kb-capture.sh"
+capture_target="$ROOT/scripts/eos-kb-capture"
+if [[ ! -L "$capture_link" || "$(readlink "$capture_link" 2>/dev/null || true)" != "$capture_target" ]]; then
+  if [[ -e "$capture_link" || -L "$capture_link" ]]; then
+    backup_path "$capture_link"
+    rm -f "$capture_link"
+  fi
+  ln -s "$capture_target" "$capture_link"
+fi
 
 echo "work knowledge indexes ready"
