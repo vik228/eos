@@ -1,0 +1,16 @@
+schema_version: 1
+command: review
+command_path: ["review"]
+owner: Task 7
+argv: ["review","direct-change","--actor","reviewer","--session","s1","--decision","accepted"]
+cases:
+  success:
+    placeholder: true
+  validation_failure:
+    placeholder: true
+  recovery:
+    placeholder: true
+    recovery: not_applicable
+  output_shape:
+    placeholder: true
+    formats: [text, json]

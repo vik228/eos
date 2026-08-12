@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="${EOS_ROOT:-$HOME/personal/eos}"
+source "$ROOT/scripts/lib-agent-session.sh"
+cwd="${EOS_AGENT_CWD:-$PWD}"
+kb="${EOS_PERSONAL_KNOWLEDGE_ROOT:-$HOME/personal/knowledge}"
+bin="${EOS_AGENT_BIN:-${OPENCODE_BIN:-$HOME/personal/eos/bin/opencode}}"
+mode="${OPENCODE_PERMISSION_MODE:-${CLAUDE_PERMISSION_MODE:-auto}}"
+args=()
+if [[ "$mode" == "auto" ]]; then
+  args+=("--auto")
+fi
+cmd=(env "OPENCODE_CONFIG_DIR=${OPENCODE_CONFIG_DIR:-$HOME/.opencode-personal}" "$bin" "${args[@]}")
+agent_session_run --agent opencode --profile personal --cwd "$cwd" --kb "$kb" -- "${cmd[@]}" "$@"

@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://eos.dev/schemas/migration-v1.json",
+  "title": "EOS lossless migration manifest",
+  "type": "object",
+  "required": ["schema_version", "kb_root", "scope", "scope_hash", "baseline_hash", "entries"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kb_root": {"type": "string", "minLength": 1},
+    "scope": {"type": "string", "minLength": 1},
+    "scope_hash": {"$ref": "#/$defs/sha256"},
+    "baseline_hash": {"$ref": "#/$defs/sha256"},
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["source_path", "source_hash", "source_type", "link_target", "target_path", "inferred_type", "planned_metadata", "permissions", "action"],
+        "properties": {
+          "source_path": {"type": "string", "minLength": 1},
+          "source_hash": {"$ref": "#/$defs/content_hash"},
+          "source_type": {"enum": ["file", "symlink"]},
+          "link_target": {"type": ["string", "null"]},
+          "target_path": {"type": "string", "minLength": 1},
+          "inferred_type": {"type": "string", "minLength": 1},
+          "planned_metadata": {"type": "object"},
+          "permissions": {"type": "integer", "minimum": 0, "maximum": 511},
+          "action": {"enum": ["preserve", "add-frontmatter"]}
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "content_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  },
+  "additionalProperties": false
+}

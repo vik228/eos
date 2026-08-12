@@ -1,0 +1,14 @@
+.DS_Store
+.env
+.env.local
+.venv
+node_modules
+__pycache__
+.pytest_cache
+.mypy_cache
+.ruff_cache
+dist
+build
+coverage
+
+**/.claude/settings.local.json

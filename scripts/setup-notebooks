@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+venv="${EOS_NOTEBOOK_VENV:-$HOME/.local/share/eos/notebooks/.venv}"
+python_bin="${PYTHON:-python3}"
+
+mkdir -p "$(dirname "$venv")"
+
+if [[ ! -x "$venv/bin/python3" ]]; then
+  uv venv --python "$python_bin" "$venv"
+fi
+
+uv pip install --python "$venv/bin/python3" \
+  pynvim \
+  jupyter \
+  jupyter_client \
+  ipykernel \
+  ipython \
+  jupytext \
+  nbformat \
+  matplotlib \
+  numpy \
+  plotly \
+  kaleido \
+  pyperclip \
+  cairosvg \
+  pnglatex \
+  pillow
+
+"$venv/bin/python3" -m ipykernel install --user --name python3 --display-name "Python 3"
+
+echo "Notebook venv ready: $venv"

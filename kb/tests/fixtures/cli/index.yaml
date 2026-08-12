@@ -1,0 +1,30 @@
+schema_version: 1
+command: index
+command_path: ["index"]
+owner: Task 4
+argv: ["index", "--kb", "${TMP}/index", "--rebuild"]
+cases:
+  success:
+    argv: ["index", "--kb", "${TMP}/index", "--rebuild"]
+    exit_code: 0
+    stdout: "indexed ${TMP}/index\n"
+    stderr: ""
+  validation_failure:
+    argv: ["index", "--kb", "${TMP}/missing"]
+    exit_code: 3
+    stdout: ""
+    stderr: "error[invalid_kb_root]: indexed with 1 validation error(s)\n"
+  recovery:
+    recovery: not_applicable
+  output_shape:
+    variants:
+      - format: text
+        argv: ["index", "--kb", "${TMP}/index", "--rebuild"]
+        exit_code: 0
+        stdout: "indexed ${TMP}/index\n"
+        stderr: ""
+      - format: json
+        argv: ["--json", "index", "--kb", "${TMP}/index", "--rebuild"]
+        exit_code: 0
+        stdout: "{\"command\": \"index\", \"exit_code\": 0, \"message\": \"indexed ${TMP}/index\", \"status\": \"indexed\"}\n"
+        stderr: ""

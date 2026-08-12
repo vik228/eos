@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="${EOS_ROOT:-$HOME/personal/eos}"
+TARGET_ROOT="${EOS_WORK_KNOWLEDGE_DIR:-$HOME/work/knowledge}"
+BACKUP_ROOT="$ROOT/backups/work-knowledge-indexes/$(date +%Y%m%d-%H%M%S)"
+force=0
+
+if [[ "${1:-}" == "--force" ]]; then
+  force=1
+fi
+
+backup_path() {
+  local path="$1"
+  if [[ -e "$path" || -L "$path" ]]; then
+    mkdir -p "$BACKUP_ROOT$(dirname "$path")"
+    cp -a "$path" "$BACKUP_ROOT$path"
+    echo "backed up: $path -> $BACKUP_ROOT$path"
+  fi
+}
+
+install_index() {
+  local source="$1"
+  local target="$2"
+  mkdir -p "$(dirname "$target")"
+  if [[ -e "$target" && "$force" -ne 1 ]]; then
+    echo "kept existing: $target"
+    return 0
+  fi
+  backup_path "$target"
+  install -m 0644 "$source" "$target"
+  echo "installed: $target"
+}
+
+install_index "$ROOT/knowledge/00-index.md" "$TARGET_ROOT/00-index.md"
+install_index "$ROOT/knowledge/_pending-kb-updates.md" "$TARGET_ROOT/_pending-kb-updates.md"
+install_index "$ROOT/knowledge/areas/agent-profile.md" "$TARGET_ROOT/areas/agent-profile.md"
+
+echo "work knowledge indexes ready"

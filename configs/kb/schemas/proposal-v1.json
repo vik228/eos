@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://eos.dev/schemas/proposal-v1.json",
+  "title": "EOS knowledge proposal",
+  "type": "object",
+  "required": ["schema_version", "proposal_id", "target", "summary", "evidence", "source_paths", "confidence", "known_gaps", "suggested_freshness", "conflicts", "result_content", "state", "base_target_hash", "proposed_result_hash", "proposal_hash", "session_id"],
+  "properties": {
+    "schema_version": {"const": 1}, "proposal_id": {"type": "string", "minLength": 1}, "target": {"type": "string", "minLength": 1}, "summary": {"type": "string", "minLength": 1},
+    "evidence": {"type": "array", "items": {"type": "string"}}, "source_paths": {"type": "array", "items": {"type": "string"}}, "confidence": {"type": "string", "minLength": 1}, "known_gaps": {"type": "array", "items": {"type": "string"}}, "suggested_freshness": {"type": "object"}, "conflicts": {"type": "array", "items": {"type": "string"}}, "result_content": {"type": "string"},
+    "state": {"enum": ["captured", "ready-for-review", "accepted", "rejected", "superseded", "promoted"]}, "base_target_hash": {"type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$"}, "proposed_result_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}, "proposal_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}, "session_id": {"type": "string", "minLength": 1}
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,30 @@
+schema_version: 1
+command: search
+command_path: ["search"]
+owner: Task 5
+argv: ["search","nothing","--kb","${TMP}/index"]
+cases:
+  success:
+    argv: ["search","nothing","--kb","${TMP}/index"]
+    exit_code: 0
+    stdout: "found 0 result(s)\n"
+    stderr: ""
+  validation_failure:
+    argv: ["search","nothing","--kb","${TMP}/missing"]
+    exit_code: 3
+    stdout: ""
+    stderr: "error[search.validation]: knowledge index is missing; run kb index\n"
+  recovery:
+    recovery: not_applicable
+  output_shape:
+    variants:
+      - format: text
+        argv: ["search","nothing","--kb","${TMP}/index"]
+        exit_code: 0
+        stdout: "found 0 result(s)\n"
+        stderr: ""
+      - format: json
+        argv: ["search","nothing","--kb","${TMP}/index","--json"]
+        exit_code: 0
+        stdout: "{\"command\": \"search\", \"data\": [], \"exit_code\": 0, \"message\": \"found 0 result(s)\", \"status\": \"searched\"}\n"
+        stderr: ""

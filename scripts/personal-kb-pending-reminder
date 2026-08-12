@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+mode="${1:---text}"
+kb="${EOS_PERSONAL_KNOWLEDGE_DIR:-$HOME/personal/knowledge}"
+
+queues=()
+if [[ -d "$kb/projects" || -d "$kb/areas" ]]; then
+  while IFS= read -r line; do queues+=("$line"); done < <(
+    find "$kb/projects" "$kb/areas" -type f -name '_pending-kb-updates.md' 2>/dev/null | LC_ALL=C sort
+  )
+fi
+
+total=0
+details=()
+for queue in "${queues[@]}"; do
+  count="$(grep -c '^- \[ \]' "$queue" 2>/dev/null || true)"
+  count="${count:-0}"
+  if (( count > 0 )); then
+    total=$((total + count))
+    details+=("${queue#"$kb/"}: $count")
+  fi
+done
+
+(( total > 0 )) || exit 0
+message="$total pending personal KB proposal(s) across ${#details[@]} queue(s) await review"
+detail_text="$(printf '%s\n' "${details[@]}")"
+context="Review every listed queue with the user. Apply stable changes only through kb propose, kb review, and kb promote. Pending queues and logs remain working registers."
+
+case "$mode" in
+  --text)
+    printf '[Personal KB] %s\n%s\n' "$message" "$detail_text"
+    ;;
+  --json)
+    jq -cn --arg m "$message" --arg d "$detail_text" --arg c "$context" \
+      '{systemMessage:($m + "\n" + $d), additional_context:$c, hookSpecificOutput:{hookEventName:"SessionStart", additionalContext:($m + "\n" + $d + "\n" + $c)}}'
+    ;;
+  *)
+    echo "usage: personal-kb-pending-reminder [--text|--json]" >&2
+    exit 2
+    ;;
+esac

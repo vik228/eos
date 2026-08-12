@@ -1,0 +1,30 @@
+schema_version: 1
+command: context
+command_path: ["context"]
+owner: Task 5
+argv: ["context","nothing","--budget","100","--kb","${TMP}/index"]
+cases:
+  success:
+    argv: ["context","nothing","--budget","100","--kb","${TMP}/index"]
+    exit_code: 0
+    stdout: "assembled 0 result card(s) at 70 units\n"
+    stderr: ""
+  validation_failure:
+    argv: ["context","nothing","--budget","100","--kb","${TMP}/missing"]
+    exit_code: 3
+    stdout: ""
+    stderr: "error[context.validation]: knowledge index is missing; run kb index\n"
+  recovery:
+    recovery: not_applicable
+  output_shape:
+    variants:
+      - format: text
+        argv: ["context","nothing","--budget","100","--kb","${TMP}/index"]
+        exit_code: 0
+        stdout: "assembled 0 result card(s) at 70 units\n"
+        stderr: ""
+      - format: json
+        argv: ["context","nothing","--budget","100","--kb","${TMP}/index","--json"]
+        exit_code: 0
+        stdout: "{\"command\": \"context\", \"data\": {\"budget\": 100, \"cards\": [], \"estimated_units\": 70, \"estimator\": \"utf8-bytes-div-2-ceil\", \"query\": \"nothing\", \"warnings\": [], \"warnings_reserved\": true}, \"exit_code\": 0, \"message\": \"assembled 0 result card(s) at 70 units\", \"status\": \"context\"}\n"
+        stderr: ""

@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="${EOS_ROOT:-$HOME/personal/eos}"
+source "$ROOT/scripts/lib-eos-config.sh"
+
+usage() { echo "usage: eos-profile init <name> | list | show [name]" >&2; }
+valid_name() { [[ "$1" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]]; }
+
+case "${1:-}" in
+  init)
+    name="${2:-}"
+    valid_name "$name" || { echo "invalid profile name: $name" >&2; exit 2; }
+    dir="$EOS_PROFILE_ROOT/$name"
+    [[ ! -e "$dir/config" && ! -e "$dir/context.md" ]] || { echo "profile already exists: $name" >&2; exit 1; }
+    mkdir -p "$dir"
+    install -m 0600 /dev/null "$dir/config"
+    install -m 0600 /dev/null "$dir/context.md"
+    printf '%s\n' "profile created: $name" "config: $dir/config" "context: $dir/context.md"
+    ;;
+  list)
+    [[ -d "$EOS_PROFILE_ROOT" ]] || exit 0
+    find "$EOS_PROFILE_ROOT" -mindepth 1 -maxdepth 1 -type d -print | sed 's#.*/##' | LC_ALL=C sort
+    ;;
+  show)
+    name="${2:-$EOS_PROFILE}"
+    valid_name "$name" || { echo "invalid profile name: $name" >&2; exit 2; }
+    printf 'profile=%s\nconfig=%s\ncontext=%s\n' "$name" "$EOS_PROFILE_ROOT/$name/config" "$EOS_PROFILE_ROOT/$name/context.md"
+    ;;
+  *) usage; exit 2 ;;
+esac

@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="${EOS_ROOT:-$HOME/personal/eos}"
+source "$ROOT/scripts/lib-eos-config.sh"
+"$ROOT/scripts/render-local-config"
+GENERATED="${EOS_GENERATED_DIR:-$HOME/.config/eos/generated}/agents"
+BACKUP_ROOT="$ROOT/backups/agent-instructions/$(date +%Y%m%d-%H%M%S)"
+
+backup_path() {
+  local path="$1"
+  if [[ -e "$path" || -L "$path" ]]; then
+    mkdir -p "$BACKUP_ROOT$(dirname "$path")"
+    cp -a "$path" "$BACKUP_ROOT$path"
+    echo "backed up: $path -> $BACKUP_ROOT$path"
+  fi
+}
+
+link_file() {
+  local link="$1"
+  local target="$2"
+  mkdir -p "$(dirname "$link")"
+  if [[ -L "$link" && "$(readlink "$link")" == "$target" ]]; then
+    echo "link ok: $link -> $target"
+    return 0
+  fi
+  backup_path "$link"
+  rm -rf "$link"
+  ln -s "$target" "$link"
+  echo "linked: $link -> $target"
+}
+
+link_file "$HOME/.codex/AGENTS.md" "$GENERATED/AGENTS.md"
+link_file "$HOME/.codex-work/AGENTS.md" "$GENERATED/AGENTS.md"
+link_file "$HOME/.codex-personal/AGENTS.md" "$GENERATED/AGENTS.md"
+
+link_file "$HOME/.opencode/AGENTS.md" "$GENERATED/AGENTS.md"
+link_file "$HOME/.opencode-work/AGENTS.md" "$GENERATED/AGENTS.md"
+link_file "$HOME/.opencode-personal/AGENTS.md" "$GENERATED/AGENTS.md"
+
+link_file "$HOME/.gemini/GEMINI.md" "$GENERATED/GEMINI.md"
+
+link_file "$HOME/.claude/CLAUDE.md" "$GENERATED/CLAUDE.md"
+link_file "$HOME/.claude-work/CLAUDE.md" "$GENERATED/CLAUDE.md"
+link_file "$HOME/.claude-personal/CLAUDE.md" "$GENERATED/CLAUDE.md"
+
+install_skill() {
+  local base="$1" name="$2"
+  link_file "$base/skills/$name/SKILL.md" "$ROOT/configs/agents/skills/$name/SKILL.md"
+}
+
+# Discovered from the skills directory rather than hardcoded, so a new skill is
+# installed everywhere by adding its directory. Sorted for deterministic output.
+skill_names() {
+  find "$ROOT/configs/agents/skills" -mindepth 2 -maxdepth 2 -name SKILL.md -print \
+    | sed 's#/SKILL.md$##; s#.*/##' \
+    | LC_ALL=C sort
+}
+
+for base in "$HOME/.claude" "$HOME/.claude-work" "$HOME/.claude-personal" "$HOME/.codex" "$HOME/.codex-work" "$HOME/.codex-personal" "$HOME/.gemini" "$HOME/.gemini/antigravity-ide" "$HOME/.config/antigravity" "$HOME/.config/agy" "$HOME/.antigravity" "$HOME/.opencode" "$HOME/.opencode-work" "$HOME/.opencode-personal"; do
+  while IFS= read -r skill_name; do
+    install_skill "$base" "$skill_name"
+  done < <(skill_names)
+done
+
+EOS_ROOT="$ROOT" "$ROOT/scripts/merge-agent-settings"
+
+echo "agent instructions installed"

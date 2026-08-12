@@ -1,0 +1,30 @@
+schema_version: 1
+command: init
+command_path: ["init"]
+owner: Task 3
+argv: ["init", "--kb", "/tmp/eos-kb-init-golden", "--project", "demo"]
+cases:
+  success:
+    argv: ["init", "--kb", "/tmp/eos-kb-init-golden", "--project", "demo"]
+    exit_code: 0
+    stdout: "initialized /tmp/eos-kb-init-golden (demo)\n"
+    stderr: ""
+  validation_failure:
+    argv: ["init", "--kb", "/tmp/eos-kb-init-golden", "--project", ""]
+    exit_code: 3
+    stdout: ""
+    stderr: "error[registry.invalid_project]: Project must be a non-empty name.\n"
+  recovery:
+    recovery: not_applicable
+  output_shape:
+    variants:
+      - format: text
+        argv: ["init", "--kb", "/tmp/eos-kb-init-golden", "--project", "demo"]
+        exit_code: 0
+        stdout: "initialized /tmp/eos-kb-init-golden (demo)\n"
+        stderr: ""
+      - format: json
+        argv: ["init", "--kb", "/tmp/eos-kb-init-golden", "--project", "demo", "--json"]
+        exit_code: 0
+        stdout: "{\"command\": \"init\", \"exit_code\": 0, \"message\": \"initialized /tmp/eos-kb-init-golden (demo)\", \"status\": \"initialized\"}\n"
+        stderr: ""

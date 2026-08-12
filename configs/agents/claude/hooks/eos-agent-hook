@@ -1,0 +1,164 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+event="${1:-}"
+payload="$(cat)"
+kb="${EOS_KB_BIN:-${EOS_ROOT:-$HOME/personal/eos}/scripts/kb}"
+# KB routing: the workspace registry (workspaces.yaml) resolves the KB from
+# cwd. A hardcoded default here breaks every registered work workspace with
+# registry.kb_mismatch, so --kb is passed only when EOS_KB_ROOT is an
+# explicit override.
+kb_args=()
+[[ -n "${EOS_KB_ROOT:-}" ]] && kb_args=(--kb "$EOS_KB_ROOT")
+session="${EOS_AGENT_SESSION_ID:-}"
+discussion_contract="Every discussion uses the global interaction contract: enable the user to do the thinking, keep turns short, ask one question at a time, make branches audible, and use natural English or English-dominant Hinglish. Project-specific rules layer on only when relevant."
+
+json_string() {
+  printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'
+}
+
+emit_continue() { printf '%s\n' '{"continue":true}'; }
+emit_block() {
+  local reason="$1"
+  python3 - "$reason" <<'PY'
+import json, sys
+print(json.dumps({"continue": False, "decision": "block", "reason": sys.argv[1]}))
+PY
+}
+
+prompt_text="$(printf '%s' "$payload" | python3 -c 'import json,sys
+try:
+ d=json.load(sys.stdin)
+ print(" ".join(str(d.get(k,"")) for k in ("prompt","last_assistant_message","transcript")))
+except Exception:
+ print("")')"
+response_invalid="$(printf '%s' "$payload" | python3 -c 'import json,sys
+try:
+ d=json.load(sys.stdin); value=" ".join(str(d.get(k,"")) for k in ("last_assistant_message","assistant_message","response"))
+ print("1" if "\u2014" in value or any("\u0900" <= c <= "\u097f" for c in value) else "0")
+except Exception: print("0")')"
+
+native_session="$(printf '%s' "$payload" | python3 -c 'import json,sys
+try: print(json.load(sys.stdin).get("session_id",""))
+except Exception: print("")')"
+
+case "$event" in
+  PreToolUse)
+    tool_name="$(printf '%s' "$payload" | python3 -c 'import json,sys
+try: print(json.load(sys.stdin).get("tool_name", ""))
+except Exception: print("")')"
+    file_path="$(printf '%s' "$payload" | python3 -c 'import json,sys
+try:
+ d=json.load(sys.stdin); t=d.get("tool_input", {})
+ print(t.get("file_path", t.get("path", "")) if isinstance(t, dict) else "")
+except Exception: print("")')"
+    if [[ "$tool_name" =~ ^(Write|Edit|MultiEdit|NotebookEdit)$ && -n "$file_path" ]]; then
+      personal_root="${EOS_PERSONAL_KNOWLEDGE_DIR:-$HOME/personal/knowledge}"
+      work_root="${EOS_WORK_KNOWLEDGE_ROOT:-$HOME/work/knowledge}"
+      explicit_root="${EOS_KB_ROOT:-}"
+      for knowledge_root in "$explicit_root" "$personal_root" "$work_root"; do
+        [[ -n "$knowledge_root" ]] || continue
+        if [[ "$file_path" == "$knowledge_root"/*.md || "$file_path" == "$knowledge_root"/*/*.md || "$file_path" == "$knowledge_root"/*/*/*.md || "$file_path" == "$knowledge_root"/*/*/*/*.md ]]; then
+          relative="${file_path#"$knowledge_root"/}"
+          if [[ "$relative" != logs/* && "$relative" != */_pending-kb-updates.md && "$relative" != _pending-kb-updates.md ]]; then
+            emit_block "Direct writes to stable KB Markdown are prohibited. Use kb propose, obtain explicit review, then run kb promote. Only logs/ and _pending-kb-updates.md are working-register exceptions."
+            exit 0
+          fi
+        fi
+      done
+    fi
+    command_text="$(printf '%s' "$payload" | python3 -c 'import json,sys
+try:
+ d=json.load(sys.stdin); t=d.get("tool_input",{})
+ print(t.get("command","") if isinstance(t,dict) else "")
+except Exception: print("")')"
+    if printf '%s' "$command_text" | grep -Eiq '(^|[[:space:]])(git[[:space:]]+(commit|push)|gh[[:space:]]+pr)([[:space:]]|$)|Co-authored-by:|co-authored-by:|session(url|_url)|attribution'; then
+      if printf '%s' "$command_text" | grep -Eiq 'Co-authored-by:|co-authored-by:|session(url|_url)|attribution'; then
+        emit_block "Agent attribution and session URL injection are prohibited in commit and PR commands. Remove the trailer or attribution flags."
+        exit 0
+      fi
+    fi
+    emit_continue
+    ;;
+  UserPromptSubmit)
+    branching_match=0
+    bug_match=0
+    printf '%s' "$prompt_text" | grep -Eiq '\b(discuss|discussion|plan|planning|design|roadmap|evaluation|strategy|requirements?|trade-?offs?|brainstorm|explore)\b' && branching_match=1
+    printf '%s' "$prompt_text" | grep -Eiq '\b(bug|regression|failed test|unexpected output|production discrepancy)\b' && bug_match=1
+    if [[ "$branching_match" == 1 && "$bug_match" == 1 ]]; then
+      printf '%s\n' '{"continue":true,"message":"Branching discussion and bug task detected: read branching-discussion/SKILL.md and bug-investigation/SKILL.md completely before acting. Keep the reply simple, ask one question at a time during exploration, and reproduce the bug through the closest end-user path before fixing."}'
+    elif [[ "$branching_match" == 1 ]]; then
+      printf '%s\n' '{"continue":true,"message":"Branching discussion detected: read branching-discussion/SKILL.md completely before the first question. Keep the reply simple and short, ask one question at a time, and keep global rules active."}'
+    elif [[ "$bug_match" == 1 ]]; then
+      printf '%s\n' '{"continue":true,"message":"Bug-shaped task detected: start with kb bug start, reproduce through the closest end-user path, and record evidence before fixing."}'
+    else emit_continue; fi
+    ;;
+  Stop)
+    if [[ "$response_invalid" == 1 ]]; then
+      emit_block "Final responses must use English or Hinglish and plain dash characters. Remove Hindi Unicode characters and the em dash before completing."
+      exit 0
+    fi
+    if [[ -z "$session" ]]; then
+      # Direct Claude launches do not own an EOS lifecycle session. They may
+      # audit a registered workspace, but must not create orphan hook sessions.
+      if [[ -x "$kb" ]]; then "$kb" audit "${kb_args[@]}" --source-root "${PWD:-.}" --json >/dev/null 2>&1 || true; fi
+      emit_continue
+      exit 0
+    fi
+    if printf '%s' "$prompt_text" | grep -Eiq '\b(bug|regression|failed test|unexpected output|production discrepancy)\b'; then
+      if ! "$kb" bug status --session "$session" "${kb_args[@]}" --json >/dev/null 2>&1; then
+        emit_block "This task is classified as a bug-shaped task but has no readable kb bug ledger. Start it with kb bug start and record reproduction evidence."
+        exit 0
+      fi
+    fi
+    if ! "$kb" checkpoint "${kb_args[@]}" --session "$session" --json >/dev/null 2>&1; then
+      # Long-running agents can outlive the lease. Resume only the session
+      # created and exported by the wrapper, then retry the checkpoint once.
+      resume_args=(session resume "$session")
+      [[ -n "$native_session" ]] && resume_args+=(--native-id "$native_session")
+      "$kb" "${resume_args[@]}" "${kb_args[@]}" --json >/dev/null 2>&1 || true
+      if ! "$kb" checkpoint "${kb_args[@]}" --session "$session" --json >/dev/null 2>&1; then
+        if printf '%s' "$prompt_text" | grep -Eiq '\b(blocked|blocker)\b'; then
+          printf '%s\n' '{"continue":true,"message":"Recorded blocker accepted; report blocked work with the blocker and next required input."}'
+        else
+          emit_block "Checkpoint is required before completion. Run kb checkpoint and resolve any reported validation or investigation gate."
+        fi
+        exit 0
+      fi
+    fi
+    if [[ -x "$kb" ]]; then "$kb" audit "${kb_args[@]}" --source-root "${PWD:-.}" --json >/dev/null 2>&1 || true; fi
+    emit_continue
+    ;;
+  SessionStart)
+    if [[ -x "$kb" ]]; then "$kb" audit "${kb_args[@]}" --source-root "${PWD:-.}" --json >/dev/null 2>&1 || true; fi
+    personal_root="${EOS_PERSONAL_KNOWLEDGE_DIR:-$HOME/personal/knowledge}"
+    reminder="${EOS_ROOT:-$HOME/personal/eos}/scripts/personal-kb-pending-reminder"
+    if [[ -x "$reminder" && ( "${EOS_KB_ROOT:-}" == "$personal_root" || "${PWD:-}" == "$HOME/personal" || "${PWD:-}" == "$HOME/personal/"* ) ]]; then
+      reminder_output="$(EOS_PERSONAL_KNOWLEDGE_DIR="$personal_root" "$reminder" --json 2>/dev/null || true)"
+      if [[ -n "$reminder_output" ]]; then
+        printf '%s' "$reminder_output" | jq --arg contract "$discussion_contract" '
+          .additional_context = ((.additional_context // "") + "\n" + $contract) |
+          .hookSpecificOutput.additionalContext = ((.hookSpecificOutput.additionalContext // "") + "\n" + $contract)'
+        exit 0
+      fi
+    fi
+    python3 - "$discussion_contract" <<'PY'
+import json, sys
+print(json.dumps({"continue": True, "message": sys.argv[1]}))
+PY
+    ;;
+  PostCompact)
+    if [[ -x "$kb" ]]; then "$kb" audit "${kb_args[@]}" --source-root "${PWD:-.}" --json >/dev/null 2>&1 || true; fi
+    python3 - "$discussion_contract" <<'PY'
+import json, sys
+print(json.dumps({"continue": True, "message": "Context compacted. " + sys.argv[1]}))
+PY
+    ;;
+  SessionEnd|PreCompact)
+    if [[ -x "$kb" ]]; then "$kb" audit "${kb_args[@]}" --source-root "${PWD:-.}" --json >/dev/null 2>&1 || true; fi
+    emit_continue
+    ;;
+  InstructionsLoaded|PostToolUse|*)
+    emit_continue
+    ;;
+esac

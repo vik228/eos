@@ -1,0 +1,16 @@
+schema_version: 1
+command: migrate
+command_path: ["migrate","verify-plan"]
+owner: Task 13
+argv: ["migrate","verify-plan","/tmp/manifest.json"]
+cases:
+  success:
+    placeholder: true
+  validation_failure:
+    placeholder: true
+  recovery:
+    placeholder: true
+    recovery: not_applicable
+  output_shape:
+    placeholder: true
+    formats: [text, json]

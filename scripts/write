@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+source "${EOS_ROOT:-$HOME/personal/eos}/scripts/lib-workspace.sh"
+
+if [[ "${1:-}" == "--dry-run" ]]; then
+  export EOS_DRY_RUN=1
+fi
+
+dir="$(resolve_dir "$EOS_PERSONAL_KNOWLEDGE_ROOT")"
+run_workspace "write" "$dir" \
+  "editor:nvim" \
+  "notes:zsh" \
+  "shell:zsh"

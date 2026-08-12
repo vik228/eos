@@ -1,0 +1,17 @@
+schema_version: 1
+work:
+  high-value:
+    include:
+      - 00-index.md
+      - _pending-kb-updates.md
+      - areas/**
+      - patterns/**
+      - projects/**
+    exclude:
+      - projects/**/logs/**
+      - projects/**/archive/**
+  remaining:
+    remainder_after: [high-value]
+personal:
+  all:
+    include: ["**"]

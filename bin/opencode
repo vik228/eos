@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_path="$0"
+best_candidate=""
+best_version=""
+
+version_gt() {
+  local left="${1:-0.0.0}"
+  local right="${2:-0.0.0}"
+  local left_major left_minor left_patch right_major right_minor right_patch
+
+  IFS=. read -r left_major left_minor left_patch <<<"$left"
+  IFS=. read -r right_major right_minor right_patch <<<"$right"
+
+  left_major="${left_major:-0}"
+  left_minor="${left_minor:-0}"
+  left_patch="${left_patch:-0}"
+  right_major="${right_major:-0}"
+  right_minor="${right_minor:-0}"
+  right_patch="${right_patch:-0}"
+
+  (( left_major > right_major )) && return 0
+  (( left_major < right_major )) && return 1
+  (( left_minor > right_minor )) && return 0
+  (( left_minor < right_minor )) && return 1
+  (( left_patch > right_patch ))
+}
+
+consider_candidate() {
+  local candidate="$1"
+  local version
+
+  [[ -x "$candidate" ]] || return 0
+  [[ "$candidate" != "$script_path" ]] || return 0
+
+  version="$("$candidate" --version 2>/dev/null | awk 'NR == 1 { print $1 }')"
+  [[ "$version" =~ ^[0-9]+[.][0-9]+[.][0-9]+$ ]] || return 0
+
+  if [[ -z "$best_candidate" ]] || version_gt "$version" "$best_version"; then
+    best_candidate="$candidate"
+    best_version="$version"
+  fi
+}
+
+prefix="$(npm prefix -g 2>/dev/null || true)"
+if [[ -n "$prefix" ]]; then
+  consider_candidate "$prefix/bin/opencode"
+fi
+
+if [[ -n "${NVM_BIN:-}" ]]; then
+  consider_candidate "$NVM_BIN/opencode"
+fi
+
+for candidate in "$HOME"/.nvm/versions/node/*/bin/opencode /usr/local/bin/opencode /opt/homebrew/bin/opencode; do
+  consider_candidate "$candidate"
+done
+
+if [[ -n "$best_candidate" ]]; then
+  exec "$best_candidate" "$@"
+fi
+
+echo "opencode not found. Run: scripts/install-agent-clis" >&2
+exit 127

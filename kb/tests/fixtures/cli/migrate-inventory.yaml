@@ -1,0 +1,16 @@
+schema_version: 1
+command: migrate
+command_path: ["migrate","inventory"]
+owner: Task 13
+argv: ["migrate","inventory","--kb","/tmp/kb","--output","/tmp/inventory.json"]
+cases:
+  success:
+    placeholder: true
+  validation_failure:
+    placeholder: true
+  recovery:
+    placeholder: true
+    recovery: not_applicable
+  output_shape:
+    placeholder: true
+    formats: [text, json]

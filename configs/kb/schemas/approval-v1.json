@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://eos.dev/schemas/approval-v1.json",
+  "title": "EOS governance approval",
+  "type": "object",
+  "required": ["schema_version", "proposal_id", "actor", "timestamp", "proposal_hash", "base_target_hash", "proposed_result_hash", "decision", "session_id"],
+  "properties": {
+    "schema_version": {"const": 1}, "proposal_id": {"type": "string", "minLength": 1}, "actor": {"type": "string", "minLength": 1}, "timestamp": {"type": "string", "format": "date-time"}, "proposal_hash": {"type": ["string", "null"]}, "base_target_hash": {"type": ["string", "null"]}, "proposed_result_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}, "decision": {"enum": ["accepted", "rejected", "superseded"]}, "session_id": {"type": "string", "minLength": 1}
+  },
+  "additionalProperties": false
+}

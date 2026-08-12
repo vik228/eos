@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="${EOS_ROOT:-$HOME/personal/eos}"
+source "$ROOT/scripts/lib-agent-session.sh"
+cwd="${EOS_AGENT_CWD:-$PWD}"
+kb="${EOS_KB_ROOT:-$HOME/personal/knowledge}"
+cmd=(env GEMINI_SYSTEM_MD="$ROOT/configs/agents/GEMINI.md" "${EOS_AGENT_BIN:-gemini}" --include-directories "$kb" "$cwd")
+agent_session_run --agent gemini --profile default --cwd "$cwd" --kb "$kb" -- "${cmd[@]}" "$@"

@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT/scripts/lib-eos-config.sh"
+runtime_root="${EOS_KB_HOME:-$HOME/.local/share/eos/kb}"
+python_bin="${EOS_KB_PYTHON:-$runtime_root/.venv/bin/python}"
+
+if [[ ! -x "$python_bin" ]]; then
+  echo "EOS KB runtime is not installed. Run: $ROOT/scripts/setup-kb" >&2
+  exit 1
+fi
+
+if ! "$python_bin" -c 'import eos_kb.cli' >/dev/null 2>&1; then
+  echo "EOS KB runtime is not installed or is broken. Run: $ROOT/scripts/setup-kb" >&2
+  exit 1
+fi
+
+exec "$python_bin" -m eos_kb.cli "$@"

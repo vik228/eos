@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+ROOT="${EOS_ROOT:-$HOME/personal/eos}"
+source "$ROOT/scripts/lib-eos-config.sh"
+
+MODE="${1:---text}"
+KB="${EOS_WORK_KNOWLEDGE_ROOT:-$HOME/work/knowledge}"
+PENDING="$KB/projects/$EOS_WORK_PROJECT_SLUG/_pending-kb-updates.md"
+
+if [[ ! -s "$PENDING" ]]; then
+  exit 0
+fi
+
+count="$(grep -c '^- \[ \]' "$PENDING" 2>/dev/null || true)"
+count="${count:-0}"
+if [[ "$count" -le 0 ]] 2>/dev/null; then
+  exit 0
+fi
+
+message="${count} pending work KB proposal(s) await review: $PENDING"
+context="There are ${count} unreviewed work KB update proposals at ${PENDING}. Before applying any KB update, read that file, review each checkbox proposal with the user, apply only accepted items to curated KB docs or memory, then check off or remove applied proposals."
+
+case "$MODE" in
+  --json)
+    jq -cn --arg m "$message" --arg c "$context" '{systemMessage:$m, additional_context:$c, hookSpecificOutput:{hookEventName:"SessionStart", additionalContext:$c}}'
+    ;;
+  --text)
+    printf '[Work KB] %s\n' "$message"
+    ;;
+  *)
+    echo "usage: codex-work-kb-pending-reminder [--text|--json]" >&2
+    exit 2
+    ;;
+esac

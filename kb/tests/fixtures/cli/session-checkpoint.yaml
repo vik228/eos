@@ -1,0 +1,16 @@
+schema_version: 1
+command: session
+command_path: ["session","checkpoint"]
+owner: Task 8
+argv: ["session","checkpoint","s1"]
+cases:
+  success:
+    placeholder: true
+  validation_failure:
+    placeholder: true
+  recovery:
+    placeholder: true
+    recovery: not_applicable
+  output_shape:
+    placeholder: true
+    formats: [text, json]

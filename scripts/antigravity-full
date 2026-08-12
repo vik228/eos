@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="${EOS_ROOT:-$HOME/personal/eos}"
+source "$ROOT/scripts/lib-agent-session.sh"
+cwd="${EOS_AGENT_CWD:-$PWD}"
+if [[ -n "${EOS_KB_ROOT:-}" ]]; then
+  kb="$EOS_KB_ROOT"
+elif [[ "$cwd" == "$HOME/work" || "$cwd" == "$HOME/work"/* ]]; then
+  kb="${EOS_WORK_KNOWLEDGE_ROOT:-$HOME/work/knowledge}"
+else
+  kb="${EOS_PERSONAL_KNOWLEDGE_ROOT:-$HOME/personal/knowledge}"
+fi
+args=()
+[[ "${ANTIGRAVITY_SKIP_PERMISSIONS:-1}" == 1 ]] && args+=(--dangerously-skip-permissions)
+[[ "${ANTIGRAVITY_SANDBOX:-0}" == 1 ]] && args+=(--sandbox)
+[[ "${ANTIGRAVITY_ADD_CWD:-1}" == 1 ]] && args+=(--add-dir "$cwd")
+[[ "${ANTIGRAVITY_ADD_WORK_KB_DIR:-1}" == 1 && -d "${EOS_WORK_KNOWLEDGE_ROOT:-$HOME/work/knowledge}" ]] && args+=(--add-dir "${EOS_WORK_KNOWLEDGE_ROOT:-$HOME/work/knowledge}")
+[[ "${ANTIGRAVITY_ADD_PERSONAL_KB_DIR:-1}" == 1 && -d "${EOS_PERSONAL_KNOWLEDGE_ROOT:-$HOME/personal/knowledge}" ]] && args+=(--add-dir "${EOS_PERSONAL_KNOWLEDGE_ROOT:-$HOME/personal/knowledge}")
+cmd=("${EOS_AGENT_BIN:-${AGY_BIN:-agy}}" "${args[@]}")
+agent_session_run --agent antigravity --profile default --cwd "$cwd" --kb "$kb" -- "${cmd[@]}" "$@"

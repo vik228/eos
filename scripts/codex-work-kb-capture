@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+ROOT="${EOS_ROOT:-$HOME/personal/eos}"
+source "$ROOT/scripts/lib-eos-config.sh"
+
+if [[ -n "${NOVA_KB_HOOK_RUNNING:-}" ]]; then
+  exit 0
+fi
+
+EVENT="${1:-SessionEnd}"
+TRANSCRIPT="${2:-}"
+KB="${EOS_WORK_KNOWLEDGE_ROOT:-$HOME/work/knowledge}"
+YEAR="$(date +%Y)"
+DATE="$(date +%F)"
+LOGDIR="$KB/logs/$YEAR"
+PENDING="$KB/projects/$EOS_WORK_PROJECT_SLUG/_pending-kb-updates.md"
+DBG="$KB/logs/.codex-hook-debug.log"
+CODEX_CAPTURE_HOME="${CODEX_CAPTURE_HOME:-${CODEX_HOME:-$HOME/.codex-work}}"
+
+if [[ -z "$TRANSCRIPT" ]]; then
+  input="$(cat)"
+  if command -v jq >/dev/null 2>&1; then
+    TRANSCRIPT="$(printf '%s' "$input" | jq -r '.transcript_path // .agent_transcript_path // empty' 2>/dev/null)"
+  fi
+fi
+
+log_dbg() {
+  mkdir -p "$(dirname "$DBG")"
+  printf '%s [%s] %s\n' "$(date -u +%FT%TZ)" "$EVENT" "$*" >>"$DBG"
+}
+
+if [[ -z "$TRANSCRIPT" || ! -f "$TRANSCRIPT" ]]; then
+  log_dbg "skip: transcript missing: ${TRANSCRIPT:-empty}"
+  if [[ -n "${DRY_RUN:-}" ]]; then
+    echo "skip: transcript missing: ${TRANSCRIPT:-empty}"
+  fi
+  exit 0
+fi
+
+if command -v jq >/dev/null 2>&1; then
+  session_cwd="$(head -n 5 "$TRANSCRIPT" | jq -r 'select(.type == "session_meta") | .payload.cwd // empty' 2>/dev/null | head -n 1)"
+else
+  session_cwd="$(head -n 5 "$TRANSCRIPT" | sed -n 's/.*"cwd":"\([^"]*\)".*/\1/p' | head -n 1)"
+fi
+
+case "$session_cwd" in
+  "$EOS_BACKEND_DIR"|"$EOS_BACKEND_DIR"/*) ;;
+  *)
+    log_dbg "skip: non-nova cwd: ${session_cwd:-unknown}"
+    if [[ -n "${DRY_RUN:-}" ]]; then
+      echo "skip: non-nova cwd: ${session_cwd:-unknown}"
+    fi
+    exit 0
+    ;;
+esac
+
+mkdir -p "$LOGDIR" "$(dirname "$PENDING")"
+
+read -r -d '' PROMPT <<PROMPT_EOF
+You are the work KB session-capture agent for Codex. A Codex session in the configured work project just triggered '$EVENT'. Read the transcript at this path:
+
+$TRANSCRIPT
+
+If the session did not touch the configured work project or work knowledge base in a substantive way, do nothing and exit.
+
+Otherwise do exactly these two things and nothing else:
+1. Write a concise dated session log to $LOGDIR/$DATE-<short-kebab-slug>.md. Include what was worked on, key decisions, current state, and any explicit resume point. If a $DATE-*.md log already covers this thread, append a new "## <time> - $EVENT" section instead of creating a near-duplicate.
+2. Append a reviewable digest of proposed knowledge-base and memory updates to $PENDING. Create the file with "# Pending KB updates (review then apply)" if absent. Add a new "## $DATE - Codex $EVENT" heading. Use markdown checkboxes. Each item must name the target file and the specific proposed change.
+
+Hard rules:
+- Do not create or edit any file under projects/$EOS_WORK_PROJECT_SLUG except _pending-kb-updates.md.
+- Do not create or edit anything under any memory directory.
+- Only write the dated log and append to _pending-kb-updates.md.
+- These are proposals for human review, not direct curated KB edits.
+- Keep total written output under about 80 lines.
+PROMPT_EOF
+
+if [[ -n "${DRY_RUN:-}" ]]; then
+  echo "would run: CODEX_HOME=$CODEX_CAPTURE_HOME codex exec --cd $KB --sandbox workspace-write --add-dir $KB --ask-for-approval never <prompt>"
+  echo "event: $EVENT"
+  echo "transcript: $TRANSCRIPT"
+  echo "pending: $PENDING"
+  echo "--- prompt ---"
+  echo "$PROMPT"
+  exit 0
+fi
+
+log_dbg "capturing transcript: $TRANSCRIPT"
+NOVA_KB_HOOK_RUNNING=1 CODEX_HOME="$CODEX_CAPTURE_HOME" codex exec \
+  --cd "$KB" \
+  --sandbox workspace-write \
+  --add-dir "$KB" \
+  --ask-for-approval never \
+  "$PROMPT" >>"$DBG" 2>&1
+rc=$?
+log_dbg "done: exit $rc"
+exit 0

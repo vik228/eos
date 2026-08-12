@@ -1,0 +1,12 @@
+fresh-session	Start a clean agent session and report its profile.
+resume	Resume the prior session from its checkpoint.
+compaction	Summarize the durable state after context compaction.
+subagent	Delegate this bounded task to a subagent and report the result.
+work-routing	Route this task to the work knowledge base.
+personal-routing	Route this task to the personal knowledge base.
+bug-reproduction-gate	Investigate this bug by reproducing it before proposing a fix.
+kb-proposal-gate	Review the pending knowledge proposal before changing stable KB content.
+commit-attribution	Prepare a commit without adding agent co-authorship.
+language-punctuation	Reply in English or Hinglish and use plain dash punctuation.
+simple-language	Explain the recommendation using simple, direct language.
+branching-discussion-trigger	Let's discuss the evaluation strategy and explore the tradeoffs before deciding.

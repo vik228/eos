@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="${EOS_ROOT:-$HOME/personal/eos}"
+TARGET_ROOT="${EOS_PERSONAL_KNOWLEDGE_DIR:-$HOME/personal/knowledge}"
+BACKUP_BASE="${EOS_PERSONAL_KNOWLEDGE_BACKUP_DIR:-$ROOT/backups/personal-knowledge-indexes}"
+BACKUP_ROOT="$BACKUP_BASE/$(date +%Y%m%d-%H%M%S)"
+force=0
+
+if [[ "${1:-}" == "--force" ]]; then
+  force=1
+fi
+
+backup_path() {
+  local path="$1"
+  if [[ -e "$path" || -L "$path" ]]; then
+    mkdir -p "$BACKUP_ROOT$(dirname "$path")"
+    cp -a "$path" "$BACKUP_ROOT$path"
+    echo "backed up: $path -> $BACKUP_ROOT$path"
+  fi
+}
+
+install_index() {
+  local source="$1"
+  local target="$2"
+  mkdir -p "$(dirname "$target")"
+  if [[ -e "$target" && "$force" -ne 1 ]]; then
+    echo "kept existing: $target"
+    return 0
+  fi
+  backup_path "$target"
+  install -m 0644 "$source" "$target"
+  echo "installed: $target"
+}
+
+install_tool_link() {
+  local source="$1"
+  local target="$2"
+  mkdir -p "$(dirname "$target")"
+  if [[ -L "$target" && "$(readlink "$target")" == "$source" ]]; then
+    echo "kept existing: $target"
+    return 0
+  fi
+  backup_path "$target"
+  ln -sfn "$source" "$target"
+  echo "installed: $target -> $source"
+}
+
+mkdir -p "$TARGET_ROOT/areas" "$TARGET_ROOT/projects/eos" "$TARGET_ROOT/patterns" "$TARGET_ROOT/logs"
+
+install_index "$ROOT/personal-knowledge/00-index.md" "$TARGET_ROOT/00-index.md"
+install_index "$ROOT/personal-knowledge/_pending-kb-updates.md" "$TARGET_ROOT/_pending-kb-updates.md"
+install_index "$ROOT/knowledge/areas/agent-profile.md" "$TARGET_ROOT/areas/agent-profile.md"
+install_index "$ROOT/personal-knowledge/projects/eos/00-index.md" "$TARGET_ROOT/projects/eos/00-index.md"
+install_index "$ROOT/personal-knowledge/projects/eos/_pending-kb-updates.md" "$TARGET_ROOT/projects/eos/_pending-kb-updates.md"
+install_tool_link "$ROOT/scripts/personal-kb-capture" "$TARGET_ROOT/bin/genesis-kb-capture.sh"
+install_tool_link "$ROOT/scripts/personal-kb-pending-reminder" "$TARGET_ROOT/bin/genesis-kb-pending-reminder.sh"
+
+echo "personal knowledge indexes ready"

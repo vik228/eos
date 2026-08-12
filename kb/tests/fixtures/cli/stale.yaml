@@ -1,0 +1,30 @@
+schema_version: 1
+command: stale
+command_path: ["stale"]
+owner: Task 6
+argv: ["stale","--kb","${TMP}/index"]
+cases:
+  success:
+    argv: ["stale","--kb","${TMP}/index"]
+    exit_code: 0
+    stdout: "found 0 freshness warning(s)\n"
+    stderr: ""
+  validation_failure:
+    argv: ["stale","--kb","${TMP}/missing"]
+    exit_code: 3
+    stdout: ""
+    stderr: "error[freshness.state_unavailable]: freshness state is missing or corrupt; run kb audit\n"
+  recovery:
+    recovery: not_applicable
+  output_shape:
+    variants:
+      - format: text
+        argv: ["stale","--kb","${TMP}/index"]
+        exit_code: 0
+        stdout: "found 0 freshness warning(s)\n"
+        stderr: ""
+      - format: json
+        argv: ["stale","--kb","${TMP}/index","--json"]
+        exit_code: 0
+        stdout: "{\"command\": \"stale\", \"data\": {\"concepts\": [], \"contradictions\": [], \"coverage\": [], \"external_sources\": [], \"generated_at\": \"2026-01-01T00:00:00+00:00\", \"index_manifest_hash\": \"aeaa3f3b5571480daf8f2c4feb09bf8285596d446bef6089cae800ff3ff565c8\", \"overall\": \"fresh\", \"schema_version\": 1, \"sources\": [], \"time\": [], \"warnings\": []}, \"exit_code\": 0, \"message\": \"found 0 freshness warning(s)\", \"status\": \"stale\"}\n"
+        stderr: ""

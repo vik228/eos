@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="${EOS_ROOT:-$HOME/personal/eos}"
+source "$ROOT/scripts/lib-agent-session.sh"
+cwd="${EOS_AGENT_CWD:-$PWD}"
+kb="${EOS_DEFAULT_KB_ROOT:-${EOS_KB_ROOT:-$HOME/personal/knowledge}}"
+bin="${EOS_AGENT_BIN:-${CLAUDE_BIN:-$HOME/personal/eos/bin/claude}}"
+mode="${CLAUDE_PERMISSION_MODE:-auto}"
+cmd=(env "CLAUDE_CONFIG_DIR=${CLAUDE_CONFIG_DIR:-$HOME/.claude}" "$bin" --permission-mode "$mode" --append-system-prompt-file "$ROOT/configs/agents/fragments/critical-rules.md")
+agent_session_run --agent claude --profile default --cwd "$cwd" --kb "$kb" -- "${cmd[@]}" "$@"

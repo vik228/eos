@@ -1,0 +1,16 @@
+schema_version: 1
+command: checkpoint
+command_path: ["checkpoint"]
+owner: Task 8
+argv: ["checkpoint"]
+cases:
+  success:
+    placeholder: true
+  validation_failure:
+    placeholder: true
+  recovery:
+    placeholder: true
+    recovery: not_applicable
+  output_shape:
+    placeholder: true
+    formats: [text, json]

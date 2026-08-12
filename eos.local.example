@@ -1,0 +1,26 @@
+# Copy this file to .eos.local. The local file is ignored by Git.
+# Values may use $HOME and are expanded when EOS loads the file.
+
+: "${EOS_PROFILE:=default}"
+: "${EOS_PROFILE_ROOT:=$HOME/.config/eos/profiles}"
+
+: "${EOS_USER_NAME:=Your Name}"
+: "${EOS_WORK_GIT_EMAIL:=you@company.example}"
+: "${EOS_PERSONAL_GIT_EMAIL:=you@example.com}"
+
+: "${EOS_WORK_ROOT:=$HOME/work}"
+: "${EOS_PERSONAL_ROOT:=$HOME/personal}"
+: "${EOS_RESEARCH_ROOT:=$HOME/research}"
+: "${EOS_TOOLS_ROOT:=$HOME/tools}"
+: "${EOS_WORK_KNOWLEDGE_ROOT:=$EOS_WORK_ROOT/knowledge}"
+: "${EOS_PERSONAL_KNOWLEDGE_ROOT:=$EOS_PERSONAL_ROOT/knowledge}"
+
+: "${EOS_BACKEND_DIR:=$EOS_WORK_ROOT/backend}"
+: "${EOS_WORK_PROJECT_SLUG:=backend}"
+: "${EOS_RESEARCH_DIR:=$EOS_PERSONAL_ROOT/research-project}"
+: "${EOS_RESEARCH_PROJECT_SLUG:=research}"
+: "${EOS_ALGO_DIR:=$EOS_PERSONAL_ROOT/leetcode}"
+: "${EOS_AGENT_PROFILE_NAME:=User}"
+
+# Optional Markdown appended only to locally installed agent instructions.
+: "${EOS_LOCAL_AGENT_CONTEXT:=$EOS_PROFILE_ROOT/$EOS_PROFILE/context.md}"

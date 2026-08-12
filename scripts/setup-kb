@@ -1,0 +1,203 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+runtime_root="${EOS_KB_HOME:-$HOME/.local/share/eos/kb}"
+active_venv="$runtime_root/.venv"
+releases_root="$runtime_root/releases"
+bootstrap_python="${EOS_KB_BOOTSTRAP_PYTHON:-3.12}"
+staging_dir=""
+release_dir=""
+activation_link=""
+rollback_link=""
+legacy_backup=""
+previous_kind="none"
+previous_target=""
+activated=0
+
+restore_previous() {
+  if [[ "$previous_kind" == "symlink" ]]; then
+    rollback_link="$(mktemp "$runtime_root/.venv.rollback.XXXXXX")"
+    rm -f "$rollback_link"
+    ln -s "$previous_target" "$rollback_link"
+    if ! mv -fh "$rollback_link" "$active_venv"; then
+      echo "EOS KB could not restore the prior runtime symlink" >&2
+      return 1
+    fi
+    rollback_link=""
+  elif [[ "$previous_kind" == "directory" ]]; then
+    rm -f "$active_venv"
+    if ! mv "$legacy_backup" "$active_venv"; then
+      echo "EOS KB could not restore the prior runtime directory at: $legacy_backup" >&2
+      return 1
+    fi
+    legacy_backup=""
+  else
+    rm -f "$active_venv"
+  fi
+  activated=0
+}
+
+cleanup() {
+  local status=$?
+  trap - EXIT
+
+  if [[ $status -ne 0 ]]; then
+    if [[ $activated -eq 1 ]]; then
+      restore_previous || status=1
+    elif [[ -n "$legacy_backup" && ! -e "$active_venv" && ! -L "$active_venv" ]]; then
+      if mv "$legacy_backup" "$active_venv"; then
+        legacy_backup=""
+      else
+        echo "EOS KB could not restore the prior runtime directory at: $legacy_backup" >&2
+        status=1
+      fi
+    fi
+    if [[ -n "$release_dir" ]]; then
+      rm -rf "$release_dir" || status=1
+    fi
+  fi
+
+  if [[ -n "$activation_link" ]]; then
+    rm -f "$activation_link" || status=1
+  fi
+  if [[ -n "$rollback_link" ]]; then
+    rm -f "$rollback_link" || status=1
+  fi
+  if [[ -n "$legacy_backup" && $status -eq 0 ]]; then
+    rm -rf "$legacy_backup" || status=1
+  fi
+  if [[ -n "$staging_dir" ]]; then
+    rm -rf "$staging_dir" || status=1
+  fi
+
+  exit "$status"
+}
+trap cleanup EXIT
+
+verify_runtime() {
+  local venv="$1"
+  local expected_release_path="$2"
+  local python_bin="$venv/bin/python"
+  local version=""
+
+  if ! version="$(
+    "$python_bin" -c \
+      'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' \
+      2>/dev/null
+  )"; then
+    return 1
+  fi
+  [[ "$version" == "3.12" ]] || return 1
+  "$python_bin" -c 'import eos_kb.cli' >/dev/null 2>&1 || return 1
+  "$python_bin" -m eos_kb.cli --help >/dev/null 2>&1 || return 1
+  "$venv/bin/kb" --help >/dev/null 2>&1 || return 1
+  [[ "$(cat "$venv/.eos-kb-release")" == "$expected_release_path" ]] || return 1
+  [[ "$(cat "$venv/.eos-root")" == "$ROOT" ]]
+}
+
+verify_activation() {
+  local expected_target="$1"
+  local actual_target=""
+  local resolved=""
+
+  [[ -L "$active_venv" ]] || return 1
+  actual_target="$(readlink "$active_venv")" || return 1
+  [[ "$actual_target" == "$expected_target" ]] || return 1
+  resolved="$(cd "$active_venv" && pwd -P)" || return 1
+  [[ "$resolved" == "$(cd "$candidate_venv" && pwd -P)" ]] || return 1
+  verify_runtime "$active_venv" "$candidate_venv"
+}
+
+if ! command -v uv >/dev/null 2>&1; then
+  echo "uv is required. Install uv, then rerun: $ROOT/scripts/setup-kb" >&2
+  exit 1
+fi
+
+mkdir -p "$runtime_root"
+staging_dir="$(mktemp -d "${TMPDIR:-/tmp}/eos-kb-setup.XXXXXX")"
+mkdir -p "$staging_dir/src"
+cp "$ROOT/kb/pyproject.toml" "$ROOT/kb/uv.lock" "$staging_dir/"
+cp -R "$ROOT/kb/src/eos_kb" "$staging_dir/src/"
+
+dist_dir="$staging_dir/dist"
+uv build --wheel --out-dir "$dist_dir" "$staging_dir"
+wheel="$(find "$dist_dir" -maxdepth 1 -type f -name 'eos_kb-*.whl' -print -quit)"
+if [[ -z "$wheel" ]]; then
+  echo "EOS KB build did not produce a wheel" >&2
+  exit 1
+fi
+
+mkdir -p "$releases_root"
+release_dir="$(mktemp -d "$releases_root/release.XXXXXX")"
+candidate_venv="$release_dir/.venv"
+uv venv --clear --python "$bootstrap_python" "$candidate_venv"
+
+UV_PROJECT_ENVIRONMENT="$candidate_venv" \
+  uv sync --locked --no-dev --no-install-project --project "$staging_dir"
+uv pip install --python "$candidate_venv/bin/python" --no-deps --reinstall "$wheel"
+printf '%s\n' "$candidate_venv" >"$candidate_venv/.eos-kb-release"
+printf '%s\n' "$ROOT" >"$candidate_venv/.eos-root"
+
+if ! verify_runtime "$candidate_venv" "$candidate_venv"; then
+  echo "EOS KB candidate runtime verification failed" >&2
+  exit 1
+fi
+
+relative_target="releases/$(basename "$release_dir")/.venv"
+activation_link="$(mktemp "$runtime_root/.venv.next.XXXXXX")"
+rm -f "$activation_link"
+ln -s "$relative_target" "$activation_link"
+
+if [[ -L "$active_venv" ]]; then
+  previous_kind="symlink"
+  previous_target="$(readlink "$active_venv")"
+elif [[ -e "$active_venv" ]]; then
+  previous_kind="directory"
+  legacy_backup="$(mktemp -d "$runtime_root/.venv.backup.XXXXXX")"
+  rmdir "$legacy_backup"
+  if ! mv "$active_venv" "$legacy_backup"; then
+    echo "EOS KB could not preserve the legacy runtime" >&2
+    exit 1
+  fi
+fi
+
+if ! mv -fh "$activation_link" "$active_venv"; then
+  echo "EOS KB could not activate the candidate runtime" >&2
+  exit 1
+fi
+activation_link=""
+activated=1
+
+if ! verify_activation "$relative_target"; then
+  echo "EOS KB activated runtime verification failed" >&2
+  exit 1
+fi
+
+previous_release=""
+if [[ "$previous_kind" == "symlink" ]]; then
+  if [[ "$previous_target" == /* ]]; then
+    previous_venv="$previous_target"
+  else
+    previous_venv="$runtime_root/$previous_target"
+  fi
+  if [[ -d "$previous_venv" ]]; then
+    previous_release="$(cd "$(dirname "$previous_venv")" && pwd -P)"
+  fi
+fi
+
+current_release="$(cd "$release_dir" && pwd -P)"
+while IFS= read -r installed_release; do
+  installed_release_resolved="$(cd "$installed_release" && pwd -P)"
+  if [[ "$installed_release_resolved" != "$current_release" && "$installed_release_resolved" != "$previous_release" ]]; then
+    rm -rf "$installed_release"
+  fi
+done < <(find "$releases_root" -mindepth 1 -maxdepth 1 -type d -print)
+
+if [[ -n "$legacy_backup" ]]; then
+  rm -rf "$legacy_backup"
+  legacy_backup=""
+fi
+release_dir=""
+
+echo "EOS KB runtime ready: $active_venv"

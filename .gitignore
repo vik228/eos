@@ -1,0 +1,14 @@
+.DS_Store
+backups/
+*.log
+.env
+.env.local
+.eos.local
+.eos-agent-context.local.md
+private-archive/
+.worktrees/
+kb/.venv/
+kb/.pytest_cache/
+kb/**/__pycache__/
+kb/build/
+kb/src/*.egg-info/

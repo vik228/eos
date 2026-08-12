@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="${EOS_ROOT:-$HOME/personal/eos}"
+SOURCE_MCP_JSON="${SOURCE_MCP_JSON:-$HOME/.mcp.json}"
+ANTIGRAVITY_MCP_CONFIGS="${ANTIGRAVITY_MCP_CONFIGS:-$HOME/.gemini/config/mcp_config.json:$HOME/.gemini/antigravity-ide/mcp_config.json}"
+BACKUP_ROOT="${EOS_BACKUP_ROOT:-$ROOT/backups/antigravity-mcps/$(date +%Y%m%d-%H%M%S)}"
+
+if [[ ! -f "$SOURCE_MCP_JSON" ]]; then
+  echo "Antigravity MCPs skipped: missing $SOURCE_MCP_JSON"
+  exit 0
+fi
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "Antigravity MCPs skipped: node is required"
+  exit 0
+fi
+
+backup_path() {
+  local path="$1"
+  if [[ -e "$path" || -L "$path" ]]; then
+    mkdir -p "$BACKUP_ROOT$(dirname "$path")"
+    cp -a "$path" "$BACKUP_ROOT$path"
+    echo "backed up: $path -> $BACKUP_ROOT$path"
+  fi
+}
+
+IFS=':' read -r -a targets <<<"$ANTIGRAVITY_MCP_CONFIGS"
+for target in "${targets[@]}"; do
+  [[ -n "$target" ]] || continue
+  backup_path "$target"
+  mkdir -p "$(dirname "$target")"
+done
+
+export SOURCE_MCP_JSON ANTIGRAVITY_MCP_CONFIGS
+node <<'NODE'
+const fs = require("fs");
+const path = require("path");
+
+const source = process.env.SOURCE_MCP_JSON;
+const targets = String(process.env.ANTIGRAVITY_MCP_CONFIGS || "")
+  .split(":")
+  .filter(Boolean);
+const typeName = "exa.cascade_plugins_pb.CascadePluginCommandTemplate";
+
+function fail(message) {
+  console.error(`Antigravity MCPs failed: ${message}`);
+  process.exit(1);
+}
+
+function readJson(file, fallback) {
+  if (!fs.existsSync(file)) {
+    return fallback;
+  }
+  try {
+    return JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch (error) {
+    fail(`could not parse ${file}: ${error.message}`);
+  }
+}
+
+function normalizeServer(name, server) {
+  if (!server || typeof server !== "object" || Array.isArray(server)) {
+    fail(`mcpServers.${name} must be an object`);
+  }
+  if (typeof server.command !== "string" || server.command.length === 0) {
+    fail(`mcpServers.${name}.command must be a non-empty string`);
+  }
+  if (server.args !== undefined && !Array.isArray(server.args)) {
+    fail(`mcpServers.${name}.args must be an array when present`);
+  }
+  if (server.env !== undefined && (!server.env || typeof server.env !== "object" || Array.isArray(server.env))) {
+    fail(`mcpServers.${name}.env must be an object when present`);
+  }
+
+  return {
+    "$typeName": typeof server.$typeName === "string" ? server.$typeName : typeName,
+    command: server.command,
+    args: Array.isArray(server.args) ? server.args.map(String) : [],
+    env: server.env ? Object.fromEntries(Object.entries(server.env).map(([key, value]) => [key, String(value)])) : {},
+  };
+}
+
+const sourceConfig = readJson(source, null);
+if (!sourceConfig || typeof sourceConfig !== "object" || Array.isArray(sourceConfig)) {
+  fail(`${source} must contain a JSON object`);
+}
+
+const sourceServers = sourceConfig.mcpServers;
+if (!sourceServers || typeof sourceServers !== "object" || Array.isArray(sourceServers)) {
+  fail(`${source} must contain an mcpServers object`);
+}
+
+const sourceNames = Object.keys(sourceServers);
+if (sourceNames.length === 0) {
+  console.log("Antigravity MCPs skipped: no mcpServers entries found");
+  process.exit(0);
+}
+
+if (targets.length === 0) {
+  fail("ANTIGRAVITY_MCP_CONFIGS did not provide any targets");
+}
+
+for (const target of targets) {
+  const existing = readJson(target, { mcpServers: {} });
+  if (!existing.mcpServers || typeof existing.mcpServers !== "object" || Array.isArray(existing.mcpServers)) {
+    existing.mcpServers = {};
+  }
+
+  for (const [name, server] of Object.entries(sourceServers)) {
+    existing.mcpServers[name] = normalizeServer(name, server);
+  }
+
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(target, `${JSON.stringify(existing, null, 2)}\n`);
+  console.log(`installed Antigravity MCP servers into ${target}: ${sourceNames.join(", ")}`);
+}
+NODE

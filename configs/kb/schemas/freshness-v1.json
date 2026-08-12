@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://eos.dev/schemas/freshness-v1.json",
+  "title": "EOS derived freshness state",
+  "type": "object",
+  "required": ["schema_version", "generated_at", "index_manifest_hash", "overall", "concepts", "sources", "external_sources", "time", "contradictions", "coverage", "warnings"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "generated_at": {"type": "string", "minLength": 1},
+    "index_manifest_hash": {"$ref": "#/$defs/sha256"},
+    "overall": {"enum": ["fresh", "stale", "unknown"]},
+    "concepts": {"type": "array", "items": {"$ref": "#/$defs/concept_freshness"}},
+    "sources": {"type": "array", "items": {"$ref": "#/$defs/source_finding"}},
+    "external_sources": {"type": "array", "items": {"$ref": "#/$defs/external_source_finding"}},
+    "time": {"type": "array", "items": {"$ref": "#/$defs/time_finding"}},
+    "contradictions": {"type": "array", "items": {"$ref": "#/$defs/contradiction"}},
+    "coverage": {"type": "array", "items": {"$ref": "#/$defs/coverage_finding"}},
+    "warnings": {"type": "array", "items": {"type": "string"}}
+  },
+  "$defs": {
+    "state": {"enum": ["current", "pending", "drifted", "stale", "unknown"]},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "nullable_hash": {"type": ["string", "null"]},
+    "concept_freshness": {
+      "type": "object",
+      "required": ["resource", "state", "reasons"],
+      "properties": {
+        "resource": {"type": "string", "minLength": 1},
+        "state": {"enum": ["fresh", "stale", "unknown"]},
+        "reasons": {"type": "array", "items": {"$ref": "#/$defs/state"}}
+      },
+      "additionalProperties": false
+    },
+    "source_finding": {
+      "type": "object",
+      "required": ["resource", "path", "state", "baseline_blob", "current_blob", "current_path", "renamed", "reason"],
+      "properties": {
+        "resource": {"type": "string", "minLength": 1},
+        "path": {"type": "string", "minLength": 1},
+        "state": {"$ref": "#/$defs/state"},
+        "baseline_blob": {"$ref": "#/$defs/nullable_hash"},
+        "current_blob": {"$ref": "#/$defs/nullable_hash"},
+        "current_path": {"type": ["string", "null"]},
+        "renamed": {"type": "boolean"},
+        "reason": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "external_source_finding": {
+      "type": "object",
+      "required": ["resource", "source", "state", "baseline_hash", "current_hash"],
+      "properties": {
+        "resource": {"type": "string", "minLength": 1},
+        "source": {"type": "string", "minLength": 1},
+        "state": {"$ref": "#/$defs/state"},
+        "baseline_hash": {"$ref": "#/$defs/nullable_hash"},
+        "current_hash": {"$ref": "#/$defs/nullable_hash"}
+      },
+      "additionalProperties": false
+    },
+    "time_finding": {
+      "type": "object",
+      "required": ["resource", "stale_after", "state"],
+      "properties": {
+        "resource": {"type": "string", "minLength": 1},
+        "stale_after": {"type": "string", "minLength": 1},
+        "state": {"$ref": "#/$defs/state"}
+      },
+      "additionalProperties": false
+    },
+    "contradiction": {
+      "type": "object",
+      "required": ["project", "claim_id", "resources", "values"],
+      "properties": {
+        "project": {"type": "string"},
+        "claim_id": {"type": "string", "minLength": 1},
+        "resources": {"type": "array", "minItems": 2, "items": {"type": "string", "minLength": 1}},
+        "values": {"type": "array", "minItems": 2, "items": {"type": "string"}}
+      },
+      "additionalProperties": false
+    },
+    "coverage_finding": {
+      "type": "object",
+      "required": ["path", "state", "resources", "current_blob"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "state": {"$ref": "#/$defs/state"},
+        "resources": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "current_blob": {"$ref": "#/$defs/nullable_hash"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

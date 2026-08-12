@@ -1,0 +1,30 @@
+schema_version: 1
+command: show
+command_path: ["show"]
+owner: Task 5
+argv: ["show","concept","--kb","${TMP}/index"]
+cases:
+  success:
+    argv: ["show","concept","--kb","${TMP}/index"]
+    exit_code: 0
+    stdout: "showing kb:test/concept\n"
+    stderr: ""
+  validation_failure:
+    argv: ["show","missing","--kb","${TMP}/index"]
+    exit_code: 3
+    stdout: ""
+    stderr: "error[show.validation]: concept not found: missing\n"
+  recovery:
+    recovery: not_applicable
+  output_shape:
+    variants:
+      - format: text
+        argv: ["show","concept","--kb","${TMP}/index"]
+        exit_code: 0
+        stdout: "showing kb:test/concept\n"
+        stderr: ""
+      - format: json
+        argv: ["show","concept","--kb","${TMP}/index","--json"]
+        exit_code: 0
+        stdout: "{\"command\": \"show\", \"data\": {\"authority_label\": \"unverified\", \"components\": [], \"contradiction_refs\": [], \"excerpt\": \"# Usage\\nA bounded retrieval fixture.\", \"freshness\": \"unknown\", \"graph_distance\": 0, \"reasons\": [\"resolved concept\"], \"relative_file\": \"concept.md\", \"resource\": \"kb:test/concept\", \"score\": 0, \"section\": \"\", \"source_paths\": [], \"source_revision\": null, \"sources\": [], \"status\": \"stable\", \"supersession_refs\": [], \"title\": \"Concept\", \"trust\": \"unverified\", \"type\": \"Decision\", \"unresolved_questions\": \"\", \"warnings\": [\"freshness: unknown\", \"trust: unverified\"]}, \"exit_code\": 0, \"message\": \"showing kb:test/concept\", \"status\": \"shown\"}\n"
+        stderr: ""

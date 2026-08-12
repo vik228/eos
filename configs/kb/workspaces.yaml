@@ -1,0 +1,10 @@
+workspaces:
+  ~/work/backend:
+    kb: ~/work/knowledge
+    project: backend
+  ~/personal/research-project:
+    kb: ~/personal/knowledge
+    project: research
+  ~/personal/eos:
+    kb: ~/personal/knowledge
+    project: eos

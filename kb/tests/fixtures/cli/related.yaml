@@ -1,0 +1,30 @@
+schema_version: 1
+command: related
+command_path: ["related"]
+owner: Task 5
+argv: ["related","concept","--kb","${TMP}/index"]
+cases:
+  success:
+    argv: ["related","concept","--kb","${TMP}/index"]
+    exit_code: 0
+    stdout: "found 0 related concept(s)\n"
+    stderr: ""
+  validation_failure:
+    argv: ["related","missing","--kb","${TMP}/index"]
+    exit_code: 3
+    stdout: ""
+    stderr: "error[related.validation]: concept not found: missing\n"
+  recovery:
+    recovery: not_applicable
+  output_shape:
+    variants:
+      - format: text
+        argv: ["related","concept","--kb","${TMP}/index"]
+        exit_code: 0
+        stdout: "found 0 related concept(s)\n"
+        stderr: ""
+      - format: json
+        argv: ["related","concept","--kb","${TMP}/index","--json"]
+        exit_code: 0
+        stdout: "{\"command\": \"related\", \"data\": [], \"exit_code\": 0, \"message\": \"found 0 related concept(s)\", \"status\": \"related\"}\n"
+        stderr: ""

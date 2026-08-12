@@ -1,0 +1,27 @@
+schema_version: 1
+profiles:
+  - claude-default
+  - claude-work
+  - claude-personal
+  - codex-default
+  - codex-work
+  - codex-personal
+  - gemini-cli
+  - antigravity-cli
+  - antigravity-ide
+  - opencode-default
+  - opencode-work
+  - opencode-personal
+rows:
+  - fresh-session
+  - resume
+  - compaction
+  - subagent
+  - work-routing
+  - personal-routing
+  - bug-reproduction-gate
+  - kb-proposal-gate
+  - commit-attribution
+  - language-punctuation
+  - simple-language
+  - branching-discussion-trigger

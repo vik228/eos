@@ -1,0 +1,16 @@
+schema_version: 1
+command: bug
+command_path: ["bug","complete"]
+owner: Task 9
+argv: ["bug","complete","i1"]
+cases:
+  success:
+    placeholder: true
+  validation_failure:
+    placeholder: true
+  recovery:
+    placeholder: true
+    recovery: not_applicable
+  output_shape:
+    placeholder: true
+    formats: [text, json]

@@ -1,0 +1,18 @@
+{
+  "attribution": {
+    "commit": "",
+    "pr": "",
+    "sessionUrl": false
+  },
+  "hooks": {
+    "InstructionsLoaded": [{"hooks": [{"type": "command", "command": "__EOS_AGENT_HOOK__ InstructionsLoaded"}]}],
+    "SessionStart": [{"hooks": [{"type": "command", "command": "__EOS_AGENT_HOOK__ SessionStart"}]}],
+    "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "__EOS_AGENT_HOOK__ UserPromptSubmit"}]}],
+    "PreToolUse": [{"hooks": [{"type": "command", "command": "__EOS_AGENT_HOOK__ PreToolUse"}]}],
+    "PostToolUse": [{"hooks": [{"type": "command", "command": "__EOS_AGENT_HOOK__ PostToolUse"}]}],
+    "PreCompact": [{"hooks": [{"type": "command", "command": "__EOS_AGENT_HOOK__ PreCompact"}, {"type": "command", "command": "__EOS_PERSONAL_KB_CAPTURE__ PreCompact", "timeout": 120, "async": true}]}],
+    "PostCompact": [{"hooks": [{"type": "command", "command": "__EOS_AGENT_HOOK__ PostCompact"}]}],
+    "Stop": [{"hooks": [{"type": "command", "command": "__EOS_AGENT_HOOK__ Stop"}]}],
+    "SessionEnd": [{"hooks": [{"type": "command", "command": "__EOS_AGENT_HOOK__ SessionEnd"}, {"type": "command", "command": "__EOS_PERSONAL_KB_CAPTURE__ SessionEnd", "timeout": 120, "async": true}]}]
+  }
+}

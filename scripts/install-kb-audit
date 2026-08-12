@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="${EOS_ROOT:-$HOME/personal/eos}"
+template="$ROOT/configs/launchd/com.vikas.eos-kb-audit.plist.in"
+destination="$HOME/Library/LaunchAgents/com.vikas.eos-kb-audit.plist"
+log_root="${EOS_KB_LOG_ROOT:-$HOME/Library/Logs/eos-kb}"
+runner="$ROOT/scripts/kb-audit-all"
+mkdir -p "$(dirname "$destination")" "$log_root"
+escaped_runner="${runner//&/\\&}"
+escaped_log="${log_root//&/\\&}"
+sed -e "s|__RUNNER__|$escaped_runner|g" -e "s|__LOG_ROOT__|$escaped_log|g" "$template" > "$destination.tmp"
+plutil -lint "$destination.tmp" >/dev/null
+mv "$destination.tmp" "$destination"
+if [[ "${EOS_SKIP_LAUNCHCTL:-0}" != "1" ]]; then
+  launchctl bootout "gui/$(id -u)" "$destination" >/dev/null 2>&1 || true
+  launchctl bootstrap "gui/$(id -u)" "$destination"
+fi

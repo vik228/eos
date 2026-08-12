@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="${EOS_ROOT:-$HOME/personal/eos}"
+source "$ROOT/scripts/lib-eos-config.sh"
+GENERATED="${EOS_GENERATED_DIR:-$HOME/.config/eos/generated}"
+mkdir -p "$GENERATED/git" "$GENERATED/agents" "$GENERATED/kb"
+
+escape_git() { printf '%s' "$1" | sed 's/[\\&]/\\&/g'; }
+
+sed \
+  -e "s|@WORK_ROOT@|$(escape_git "$EOS_WORK_ROOT")|g" \
+  -e "s|@PERSONAL_ROOT@|$(escape_git "$EOS_PERSONAL_ROOT")|g" \
+  -e "s|@RESEARCH_ROOT@|$(escape_git "$EOS_RESEARCH_ROOT")|g" \
+  -e "s|@TOOLS_ROOT@|$(escape_git "$EOS_TOOLS_ROOT")|g" \
+  "$ROOT/configs/git/gitconfig.template" > "$GENERATED/git/gitconfig"
+
+{
+  printf '[user]\n  name = %s\n  email = %s\n' "$EOS_USER_NAME" "$EOS_WORK_GIT_EMAIL"
+} > "$GENERATED/git/gitconfig-work"
+{
+  printf '[user]\n  name = %s\n  email = %s\n' "$EOS_USER_NAME" "$EOS_PERSONAL_GIT_EMAIL"
+} > "$GENERATED/git/gitconfig-personal"
+
+{
+  printf 'workspaces:\n'
+  printf '  "%s":\n    kb: "%s"\n    project: "%s"\n' "$EOS_BACKEND_DIR" "$EOS_WORK_KNOWLEDGE_ROOT" "$EOS_WORK_PROJECT_SLUG"
+  printf '  "%s":\n    kb: "%s"\n    project: "%s"\n' "$EOS_RESEARCH_DIR" "$EOS_PERSONAL_KNOWLEDGE_ROOT" "$EOS_RESEARCH_PROJECT_SLUG"
+  printf '  "%s":\n    kb: "%s"\n    project: "eos"\n' "$EOS_ROOT" "$EOS_PERSONAL_KNOWLEDGE_ROOT"
+} > "$GENERATED/kb/workspaces.yaml"
+
+EOS_RENDER_OUTPUT_DIR="$GENERATED/agents" "$ROOT/scripts/render-agent-instructions"
+echo "local configuration rendered: $GENERATED"

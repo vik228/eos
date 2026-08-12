@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="${EOS_ROOT:-$HOME/personal/eos}"
+fragment="$ROOT/configs/agents/claude/settings.fragment.json"
+hook="$ROOT/configs/agents/claude/hooks/eos-agent-hook"
+capture="$ROOT/scripts/personal-kb-capture"
+[[ -f "$fragment" && -x "$hook" && -x "$capture" ]] || { echo "Claude settings sources are missing" >&2; exit 1; }
+
+merge_one() {
+  local target="$1"
+  mkdir -p "$(dirname "$target")"
+  EOS_HOOK="$hook" EOS_PERSONAL_KB_CAPTURE="$capture" python3 - "$target" "$fragment" <<'PY'
+import json, os, pathlib, sys
+target, fragment = map(pathlib.Path, sys.argv[1:])
+try:
+    data = json.loads(target.read_text()) if target.exists() else {}
+except (OSError, json.JSONDecodeError) as exc:
+    raise SystemExit(f"invalid Claude settings {target}: {exc}")
+frag = json.loads(fragment.read_text())
+data.setdefault("attribution", {}).update(frag["attribution"])
+hooks = data.setdefault("hooks", {})
+for event, entries in frag["hooks"].items():
+    rendered = json.loads(
+        json.dumps(entries)
+        .replace("__EOS_AGENT_HOOK__", os.environ["EOS_HOOK"])
+        .replace("__EOS_PERSONAL_KB_CAPTURE__", os.environ["EOS_PERSONAL_KB_CAPTURE"])
+    )
+    current = hooks.setdefault(event, [])
+    for entry in rendered:
+        if entry not in current:
+            current.append(entry)
+target.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+PY
+}
+
+for profile in .claude .claude-work .claude-personal; do
+  merge_one "$HOME/$profile/settings.json"
+done
+echo "Claude settings merged"

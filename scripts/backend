@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+source "${EOS_ROOT:-$HOME/personal/eos}/scripts/lib-workspace.sh"
+
+if [[ "${1:-}" == "--dry-run" ]]; then
+  export EOS_DRY_RUN=1
+fi
+
+dir="$(resolve_dir "$EOS_BACKEND_DIR")"
+run_workspace "backend" "$dir" \
+  "editor:nvim \"$dir\"" \
+  "claude:claude-work; exec zsh" \
+  "codex:codex-work; exec zsh" \
+  "antigravity:antigravity-full; exec zsh" \
+  "shell:zsh" \
+  "logs:zsh"

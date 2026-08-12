@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="${EOS_ROOT:-$HOME/personal/eos}"
+source "$ROOT/scripts/lib-agent-session.sh"
+CODEX_HOME="${CODEX_HOME:-$HOME/.codex-personal}"
+current_dir="$(cd "${CODEX_PERSONAL_DIR:-$PWD}" 2>/dev/null && pwd -P || printf '%s' "${CODEX_PERSONAL_DIR:-$PWD}")"
+kb="${EOS_PERSONAL_KNOWLEDGE_ROOT:-$HOME/personal/knowledge}"
+args=(--cd "$current_dir" --sandbox "${CODEX_PERSONAL_SANDBOX_MODE:-danger-full-access}")
+if [[ -n "${CODEX_PERSONAL_SANDBOX_CONFIG-sandbox_permissions=[\"disk-full-read-access\"]}" ]]; then args+=(-c "${CODEX_PERSONAL_SANDBOX_CONFIG-sandbox_permissions=[\"disk-full-read-access\"]}"); fi
+[[ "${CODEX_PERSONAL_NETWORK_ACCESS:-1}" == 1 ]] && args+=(-c sandbox_workspace_write.network_access=true)
+[[ "${CODEX_PERSONAL_ADD_WORK_DIR:-1}" == 1 && -d "$current_dir" ]] && args+=(--add-dir "$current_dir")
+[[ "${CODEX_PERSONAL_ADD_KB_DIR:-1}" == 1 && -d "$kb" ]] && args+=(--add-dir "$kb")
+cmd=(env "CODEX_HOME=$CODEX_HOME" "${EOS_AGENT_BIN:-codex}" "${args[@]}" --ask-for-approval never)
+agent_session_run --agent codex --profile personal --cwd "$current_dir" --kb "$kb" -- "${cmd[@]}" "$@"

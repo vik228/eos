@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+[[ -z "${PERSONAL_KB_HOOK_RUNNING:-}" ]] || exit 0
+
+event="${1:-unknown}"
+kb="${EOS_PERSONAL_KNOWLEDGE_DIR:-$HOME/personal/knowledge}"
+debug="$kb/logs/.hook-debug.log"
+input="$(cat)"
+transcript="$(printf '%s' "$input" | jq -r '.transcript_path // .agent_transcript_path // empty' 2>/dev/null)"
+reason="$(printf '%s' "$input" | jq -r '.reason // .trigger // empty' 2>/dev/null)"
+session_id="$(printf '%s' "$input" | jq -r '.session_id // "nosid"' 2>/dev/null)"
+session_cwd="$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null)"
+session_cwd="${session_cwd:-${PWD:-}}"
+
+if [[ -z "${EOS_PERSONAL_CAPTURE_ALL:-}" ]]; then
+  case "$session_cwd" in "$HOME/personal"|"$HOME/personal/"*) ;; *) exit 0 ;; esac
+fi
+
+log_debug() {
+  mkdir -p "$(dirname "$debug")"
+  printf '%s [%s reason=%s sid=%s] %s\n' "$(date -u +%FT%TZ)" "$event" "${reason:-n/a}" "$session_id" "$*" >>"$debug"
+}
+
+if [[ "$event" == SessionEnd ]]; then
+  case "$reason" in clear|logout) ;; *) log_debug "skip uninteresting reason"; exit 0 ;; esac
+fi
+
+if [[ "$event" == PreCompact ]]; then
+  marker="$kb/logs/.compact-seen-$session_id"
+  [[ ! -f "$marker" ]] || { log_debug "skip compact already captured"; exit 0; }
+  mkdir -p "$(dirname "$marker")"
+  : >"$marker"
+fi
+
+[[ -n "$transcript" && -f "$transcript" ]] || { log_debug "transcript missing"; exit 0; }
+
+year="$(date +%Y)"
+date_value="$(date +%F)"
+log_dir="$kb/logs/$year"
+mkdir -p "$log_dir"
+dedupe="${EOS_ROOT:-$HOME/personal/eos}/scripts/dedupe-pending-kb-queues"
+[[ ! -x "$dedupe" ]] || "$dedupe" "$kb" >/dev/null
+
+queue_list="$(find "$kb/projects" "$kb/areas" -type f -name '_pending-kb-updates.md' 2>/dev/null | LC_ALL=C sort || true)"
+matched_queues="$(python3 - "$kb" "$transcript" $queue_list <<'PY'
+import pathlib, sys
+root = pathlib.Path(sys.argv[1])
+text = pathlib.Path(sys.argv[2]).read_text(errors="replace")
+for raw in sys.argv[3:]:
+    queue = pathlib.Path(raw)
+    parent = queue.parent.relative_to(root).as_posix()
+    if parent in text or any(str(root / parent / name) in text for name in ("00-index.md", "decisions.md", "portfolio-snapshot.md")):
+        print(queue)
+PY
+)"
+
+claude_bin="${CLAUDE_BIN:-$(command -v claude || printf '/usr/local/bin/claude')}"
+read -r -d '' prompt <<PROMPT_EOF || true
+You are the personal KB session-capture agent. Read this transcript:
+
+$transcript
+
+Write only a concise dated log under $log_dir and reviewable checkbox proposals to the correct pending queues.
+
+Available queues:
+$queue_list
+
+Queues suggested by paths actually present in the transcript:
+${matched_queues:-none}
+
+You must route proposals by each target path. A target under projects/X goes to projects/X/_pending-kb-updates.md. A target under areas/X goes to areas/X/_pending-kb-updates.md. Different subjects may require different queues. If no registered queue matches, append a warning item to $kb/_pending-kb-updates.md instead of guessing.
+
+Hard rules:
+- Never edit a stable KB concept.
+- Write only under logs/ and append only to _pending-kb-updates.md files.
+- Read the open checkboxes in the target queue first and do not append an item that is already open.
+- Each proposal must name its target path and concrete change.
+- Keep total output under 80 lines.
+PROMPT_EOF
+
+if [[ -n "${DRY_RUN:-}" ]]; then
+  printf 'would run: %s -p <prompt>\n%s\n' "$claude_bin" "$prompt"
+  exit 0
+fi
+
+log_debug "capturing transcript"
+PERSONAL_KB_HOOK_RUNNING=1 "$claude_bin" -p "$prompt" \
+  --allowedTools Read Write Edit --permission-mode acceptEdits >>"$debug" 2>&1 || \
+  log_debug "capture command failed"
+[[ ! -x "$dedupe" ]] || "$dedupe" "$kb" >>"$debug" 2>&1

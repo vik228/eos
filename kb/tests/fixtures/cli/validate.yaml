@@ -1,0 +1,30 @@
+schema_version: 1
+command: validate
+command_path: ["validate"]
+owner: Task 4
+argv: ["validate", "--kb", "${TMP}/index", "--strict"]
+cases:
+  success:
+    argv: ["validate", "--kb", "${TMP}/index", "--strict"]
+    exit_code: 0
+    stdout: "validated ${TMP}/index\n"
+    stderr: ""
+  validation_failure:
+    argv: ["validate", "--kb", "${TMP}/missing", "--strict"]
+    exit_code: 3
+    stdout: ""
+    stderr: "error[index_missing]: validation failed with 2 error(s)\n"
+  recovery:
+    recovery: not_applicable
+  output_shape:
+    variants:
+      - format: text
+        argv: ["validate", "--kb", "${TMP}/index", "--strict"]
+        exit_code: 0
+        stdout: "validated ${TMP}/index\n"
+        stderr: ""
+      - format: json
+        argv: ["--json", "validate", "--kb", "${TMP}/index", "--strict"]
+        exit_code: 0
+        stdout: "{\"command\": \"validate\", \"exit_code\": 0, \"message\": \"validated ${TMP}/index\", \"status\": \"validated\"}\n"
+        stderr: ""

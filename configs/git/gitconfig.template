@@ -1,0 +1,31 @@
+[includeIf "gitdir:@WORK_ROOT@/"]
+  path = ~/.gitconfig-work
+[includeIf "gitdir:@WORK_ROOT@/**"]
+  path = ~/.gitconfig-work
+[includeIf "gitdir:@PERSONAL_ROOT@/"]
+  path = ~/.gitconfig-personal
+[includeIf "gitdir:@PERSONAL_ROOT@/**"]
+  path = ~/.gitconfig-personal
+[includeIf "gitdir:@RESEARCH_ROOT@/"]
+  path = ~/.gitconfig-personal
+[includeIf "gitdir:@RESEARCH_ROOT@/**"]
+  path = ~/.gitconfig-personal
+[includeIf "gitdir:@TOOLS_ROOT@/"]
+  path = ~/.gitconfig-personal
+[includeIf "gitdir:@TOOLS_ROOT@/**"]
+  path = ~/.gitconfig-personal
+
+[core]
+  excludesfile = ~/.gitignore_global
+
+[init]
+  defaultBranch = main
+
+[pull]
+  rebase = false
+
+[push]
+  autoSetupRemote = true
+
+[fetch]
+  prune = true

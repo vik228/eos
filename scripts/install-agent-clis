@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" == "--dry-run" ]]; then
+  echo "npm install -g --force --include=optional @anthropic-ai/claude-code@latest @openai/codex@latest @google/gemini-cli@latest @anthropic-ai/claude-code-darwin-arm64@latest"
+  echo "npm install -g --force --include=optional <codex-native-alias-from-package-json>"
+  echo "node \$(npm root -g)/@anthropic-ai/claude-code/install.cjs"
+  echo "agy update"
+  exit 0
+fi
+
+if ! command -v npm >/dev/null 2>&1; then
+  echo "agent CLI install skipped: npm is required" >&2
+  exit 1
+fi
+
+claude_native_package=""
+codex_native_package=""
+case "$(uname -s)-$(uname -m)" in
+  Darwin-arm64)
+    claude_native_package="@anthropic-ai/claude-code-darwin-arm64@latest"
+    codex_native_package="@openai/codex-darwin-arm64"
+    ;;
+  Darwin-x86_64)
+    claude_native_package="@anthropic-ai/claude-code-darwin-x64@latest"
+    codex_native_package="@openai/codex-darwin-x64"
+    ;;
+  Linux-x86_64)
+    claude_native_package="@anthropic-ai/claude-code-linux-x64@latest"
+    codex_native_package="@openai/codex-linux-x64"
+    ;;
+  Linux-aarch64|Linux-arm64)
+    claude_native_package="@anthropic-ai/claude-code-linux-arm64@latest"
+    codex_native_package="@openai/codex-linux-arm64"
+    ;;
+esac
+
+packages=(
+  "@anthropic-ai/claude-code@latest"
+  "@openai/codex@latest"
+  "@google/gemini-cli@latest"
+  "opencode-ai@latest"
+)
+if [[ -n "$claude_native_package" ]]; then
+  packages+=("$claude_native_package")
+fi
+
+npm install -g --force --include=optional "${packages[@]}"
+
+if [[ -n "$codex_native_package" ]]; then
+  codex_package_json="$(npm root -g)/@openai/codex/package.json"
+  if [[ -f "$codex_package_json" ]]; then
+    codex_native_spec="$(node -e 'const p=require(process.argv[1]); const n=process.argv[2]; process.stdout.write((p.optionalDependencies && p.optionalDependencies[n]) || "")' "$codex_package_json" "$codex_native_package")"
+    if [[ -n "$codex_native_spec" ]]; then
+      npm install -g --force --include=optional "$codex_native_package@$codex_native_spec"
+    fi
+  fi
+fi
+
+claude_install_script="$(npm root -g)/@anthropic-ai/claude-code/install.cjs"
+if [[ -f "$claude_install_script" ]]; then
+  node "$claude_install_script"
+fi
+
+if command -v agy >/dev/null 2>&1; then
+  agy update || echo "agy update reported issues; continue and verify manually"
+fi
+
+echo "agent CLIs updated"

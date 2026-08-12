@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://eos.dev/schemas/concept-v1.json",
+  "title": "EOS OKF concept",
+  "type": "object",
+  "required": ["type"],
+  "properties": {
+    "type": {"type": "string", "pattern": "\\S"},
+    "title": {"type": "string", "pattern": "\\S"},
+    "description": {"type": "string", "pattern": "\\S"},
+    "resource": {"type": "string", "pattern": "\\S"},
+    "tags": {"type": "array", "items": {"type": "string", "pattern": "\\S"}},
+    "generated": {"type": "boolean"},
+    "verified": {"type": "array"},
+    "sources": {"type": "array", "items": {"type": "string", "pattern": "\\S"}},
+    "status": {"enum": ["draft", "stable", "deprecated"]},
+    "stale_after": {"type": "string", "pattern": "\\S"},
+    "eos": {"$ref": "#/$defs/eos"}
+  },
+  "not": {"required": ["authoritative"]},
+  "$defs": {
+    "eos": {
+      "type": "object",
+      "properties": {
+        "project": {"type": "string", "pattern": "\\S"},
+        "components": {"type": "array", "items": {"type": "string", "pattern": "\\S"}},
+        "symptoms": {"type": "array", "items": {"type": "string", "pattern": "\\S"}},
+        "source_paths": {"type": "array", "items": {"type": "string", "pattern": "\\S"}},
+        "source_revision": {"type": "string", "pattern": "\\S"},
+        "owner": {"type": "string", "pattern": "\\S"},
+        "supersedes": {"type": "array", "items": {"type": "string", "pattern": "\\S"}},
+        "claims": {"type": "array", "items": {"$ref": "#/$defs/claim"}}
+      },
+      "additionalProperties": true
+    },
+    "claim": {
+      "type": "object",
+      "required": ["id", "value"],
+      "properties": {
+        "id": {"type": "string", "pattern": "\\S"},
+        "value": {"$ref": "#/$defs/claim_value"}
+      }
+    },
+    "claim_value": {
+      "$comment": "EOS raw YAML validation rejects floating-point nodes before JSON Schema validation because Draft 2020-12 integer semantics accept mathematically integral decimals such as 1.0.",
+      "x-eos-no-floats": true,
+      "oneOf": [
+        {"type": "null"},
+        {"type": "boolean"},
+        {"type": "integer"},
+        {"type": "string"},
+        {"type": "array", "items": {"$ref": "#/$defs/claim_value"}},
+        {
+          "type": "object",
+          "additionalProperties": {"$ref": "#/$defs/claim_value"}
+        }
+      ]
+    }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,30 @@
+schema_version: 1
+command: status
+command_path: ["status"]
+owner: Task 5
+argv: ["status","--kb","${TMP}/index"]
+cases:
+  success:
+    argv: ["status","--kb","${TMP}/index"]
+    exit_code: 0
+    stdout: "knowledge index status\n"
+    stderr: ""
+  validation_failure:
+    argv: ["status","--kb","${TMP}/missing"]
+    exit_code: 3
+    stdout: ""
+    stderr: "error[status.validation]: knowledge root is missing or not a directory\n"
+  recovery:
+    recovery: not_applicable
+  output_shape:
+    variants:
+      - format: text
+        argv: ["status","--kb","${TMP}/index"]
+        exit_code: 0
+        stdout: "knowledge index status\n"
+        stderr: ""
+      - format: json
+        argv: ["status","--kb","${TMP}/index","--json"]
+        exit_code: 0
+        stdout: "{\"command\": \"status\", \"data\": {\"bundle\": {\"concepts\": 1}, \"schema_version\": 4, \"state\": {\"corrupt\": [], \"missing\": []}}, \"exit_code\": 0, \"message\": \"knowledge index status\", \"status\": \"ready\"}\n"
+        stderr: ""

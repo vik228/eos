@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="${EOS_ROOT:-$HOME/personal/eos}"
+source "$ROOT/scripts/lib-agent-session.sh"
+cwd="${EOS_AGENT_CWD:-$PWD}"
+kb="${EOS_DEFAULT_KB_ROOT:-${EOS_KB_ROOT:-$HOME/personal/knowledge}}"
+cmd=(env "CODEX_HOME=${CODEX_HOME:-$HOME/.codex}" "${EOS_AGENT_BIN:-codex}" --cd "$cwd" --add-dir "$kb" --ask-for-approval never)
+agent_session_run --agent codex --profile default --cwd "$cwd" --kb "$kb" -- "${cmd[@]}" "$@"

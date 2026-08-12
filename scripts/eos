@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="${EOS_ROOT:-$HOME/personal/eos}"
+source "$ROOT/scripts/lib-eos-config.sh"
+
+usage() {
+  cat <<'USAGE'
+EOS commands:
+  eos backend
+  eos research
+  eos paper
+  eos algo
+  eos leetcode
+  eos write
+  eos agents
+  eos kb <command>
+  eos profile init <name> | list | show [name]
+  eos agent doctor
+  eos doctor
+USAGE
+}
+
+doctor() {
+  local status=0
+  echo "EOS doctor"
+  echo "root: $ROOT"
+  echo "arch: $(uname -m)"
+
+  if [[ -x /opt/homebrew/bin/brew ]]; then
+    echo "brew: /opt/homebrew/bin/brew"
+  else
+    echo "missing: /opt/homebrew/bin/brew"
+    status=1
+  fi
+
+  for tool in git zsh starship tmux wezterm nvim uv node python3 mise; do
+    if command -v "$tool" >/dev/null 2>&1; then
+      echo "$tool: $(command -v "$tool")"
+    else
+      echo "missing: $tool"
+      status=1
+    fi
+  done
+
+  for optional in claude codex agy opencode; do
+    if command -v "$optional" >/dev/null 2>&1; then
+      echo "$optional: $(command -v "$optional")"
+    else
+      echo "optional missing: $optional"
+    fi
+  done
+
+  "$ROOT/tests/test_symlinks.sh" || status=1
+  for script in backend research paper algo leetcode write agents eos; do
+    if [[ -x "$ROOT/scripts/$script" ]]; then
+      echo "script ok: $script"
+    else
+      echo "script missing or not executable: $script"
+      status=1
+    fi
+  done
+
+  for path in "$EOS_BACKEND_DIR" "$EOS_RESEARCH_DIR" "$EOS_RESEARCH_ROOT" "$EOS_ALGO_DIR" "$EOS_PERSONAL_KNOWLEDGE_ROOT"; do
+    [[ -d "$path" ]] && echo "workspace path ok: $path" || echo "workspace path missing: $path"
+  done
+
+  for path in "$HOME/.claude-work" "$HOME/.claude-personal" "$HOME/.codex-work" "$HOME/.codex-personal" "$HOME/.gemini" "$HOME/.opencode-work" "$HOME/.opencode-personal"; do
+    [[ -d "$path" ]] && echo "agent config path ok: $path" || echo "agent config path missing: $path"
+  done
+
+  echo "work git email: $(git -C "$EOS_BACKEND_DIR" config user.email 2>/dev/null || echo unavailable)"
+  echo "personal git email: $(git -C "$EOS_RESEARCH_DIR" config user.email 2>/dev/null || echo unavailable)"
+
+  return "$status"
+}
+
+cmd="${1:---help}"
+case "$cmd" in
+  backend|research|paper|algo|leetcode|write|agents)
+    shift
+    exec "$ROOT/scripts/$cmd" "$@"
+    ;;
+  doctor)
+    doctor
+    ;;
+  kb)
+    shift
+    exec "$ROOT/scripts/kb" "$@"
+    ;;
+  profile)
+    shift
+    exec "$ROOT/scripts/eos-profile" "$@"
+    ;;
+  agent)
+    shift
+    [[ "${1:-}" == "doctor" ]] || { usage >&2; exit 2; }
+    doctor
+    ;;
+  -h|--help|help)
+    usage
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac

@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="${EOS_ROOT:-$HOME/personal/eos}"
+SOURCE_MCP_JSON="${SOURCE_MCP_JSON:-$HOME/.mcp.json}"
+CODEX_CONFIG_TOML="${CODEX_CONFIG_TOML:-$HOME/.codex-work/config.toml}"
+BACKUP_ROOT="${EOS_BACKUP_ROOT:-$ROOT/backups/codex-work-mcps/$(date +%Y%m%d-%H%M%S)}"
+
+if [[ ! -f "$SOURCE_MCP_JSON" ]]; then
+  echo "codex work MCPs skipped: missing $SOURCE_MCP_JSON"
+  exit 0
+fi
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "codex work MCPs skipped: node is required"
+  exit 0
+fi
+
+backup_path() {
+  local path="$1"
+  if [[ -e "$path" || -L "$path" ]]; then
+    mkdir -p "$BACKUP_ROOT$(dirname "$path")"
+    cp -a "$path" "$BACKUP_ROOT$path"
+    echo "backed up: $path -> $BACKUP_ROOT$path"
+  fi
+}
+
+backup_path "$CODEX_CONFIG_TOML"
+mkdir -p "$(dirname "$CODEX_CONFIG_TOML")"
+
+export SOURCE_MCP_JSON CODEX_CONFIG_TOML
+node <<'NODE'
+const fs = require("fs");
+const path = require("path");
+
+const source = process.env.SOURCE_MCP_JSON;
+const destination = process.env.CODEX_CONFIG_TOML;
+const begin = "# BEGIN EOS WORK MCP SERVERS";
+const end = "# END EOS WORK MCP SERVERS";
+
+function tomlString(value) {
+  return JSON.stringify(String(value));
+}
+
+function tomlKey(value) {
+  return JSON.stringify(String(value));
+}
+
+function tomlArray(values) {
+  return `[${values.map(tomlString).join(", ")}]`;
+}
+
+function fail(message) {
+  console.error(`codex work MCPs failed: ${message}`);
+  process.exit(1);
+}
+
+let parsed;
+try {
+  parsed = JSON.parse(fs.readFileSync(source, "utf8"));
+} catch (error) {
+  fail(`could not parse ${source}: ${error.message}`);
+}
+
+const servers = parsed.mcpServers;
+if (!servers || typeof servers !== "object" || Array.isArray(servers)) {
+  fail(`${source} must contain an mcpServers object`);
+}
+
+const names = Object.keys(servers);
+if (names.length === 0) {
+  console.log("codex work MCPs skipped: no mcpServers entries found");
+  process.exit(0);
+}
+
+const lines = [
+  begin,
+  `# Generated from ${source}. Do not edit inside this block.`,
+  "",
+];
+
+for (const name of names) {
+  const server = servers[name];
+  if (!server || typeof server !== "object" || Array.isArray(server)) {
+    fail(`mcpServers.${name} must be an object`);
+  }
+  if (typeof server.command !== "string" || server.command.length === 0) {
+    fail(`mcpServers.${name}.command must be a non-empty string`);
+  }
+  if (server.args !== undefined && !Array.isArray(server.args)) {
+    fail(`mcpServers.${name}.args must be an array when present`);
+  }
+  if (server.env !== undefined && (!server.env || typeof server.env !== "object" || Array.isArray(server.env))) {
+    fail(`mcpServers.${name}.env must be an object when present`);
+  }
+
+  lines.push(`[mcp_servers.${tomlKey(name)}]`);
+  lines.push(`command = ${tomlString(server.command)}`);
+  if (server.args) {
+    lines.push(`args = ${tomlArray(server.args)}`);
+  }
+
+  if (server.env && Object.keys(server.env).length > 0) {
+    lines.push("");
+    lines.push(`[mcp_servers.${tomlKey(name)}.env]`);
+    for (const [key, value] of Object.entries(server.env)) {
+      lines.push(`${tomlKey(key)} = ${tomlString(value)}`);
+    }
+  }
+  lines.push("");
+}
+
+lines.push(end);
+const block = `${lines.join("\n")}\n`;
+
+let config = "";
+if (fs.existsSync(destination)) {
+  config = fs.readFileSync(destination, "utf8");
+}
+
+const managedBlock = new RegExp(`${begin.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[\\s\\S]*?${end.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\n?`, "m");
+config = config.replace(managedBlock, "").trimEnd();
+const separator = config.length > 0 ? "\n\n" : "";
+
+fs.mkdirSync(path.dirname(destination), { recursive: true });
+fs.writeFileSync(destination, `${config}${separator}${block}`);
+console.log(`installed codex work MCP servers: ${names.join(", ")}`);
+NODE

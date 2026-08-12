@@ -1,0 +1,17 @@
+schema_version: 1
+queries:
+  - {query: "booking entity granularity", expected: "kb:bench/alpha-01", scenario: clean}
+  - {query: "family route ownership", expected: "kb:bench/alpha-02", scenario: clean}
+  - {query: "master gate validation", expected: "kb:bench/alpha-03", scenario: clean}
+  - {query: "sku grain mismatch", expected: "kb:bench/alpha-04", scenario: clean}
+  - {query: "wrong project editor", expected: "kb:bench/alpha-05", scenario: clean}
+  - {query: "identity lifecycle intent", expected: "kb:bench/alpha-06", scenario: clean}
+  - {query: "execution ownership boundary", expected: "kb:bench/alpha-07", scenario: clean}
+  - {query: "database socket permission", expected: "kb:bench/alpha-08", scenario: clean}
+  - {query: "interactive kernel session", expected: "kb:bench/alpha-09", scenario: clean}
+  - {query: "agent profile routing", expected: "kb:bench/alpha-10", scenario: clean}
+  - {query: "MCP work profile", expected: "kb:bench/alpha-11", scenario: clean}
+  - {query: "pending knowledge review", expected: "kb:bench/alpha-12", scenario: clean}
+  - {query: "architecture contract resolver", expected: "kb:bench/alpha-13", scenario: stale, warning_fragments: ["source drift: kb:bench/alpha-13 (src/resolver.py)"]}
+  - {query: "scheduler dispatch default", expected: "kb:bench/alpha-14", scenario: contradiction, warning_fragments: ["contradiction: nova:scheduler.mode"]}
+  - {query: "history retired allocator", expected: "kb:bench/alpha-15", scenario: history-only, warning_fragments: ["freshness: unknown"]}

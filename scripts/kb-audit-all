@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+ROOT="${EOS_ROOT:-$HOME/personal/eos}"
+KB="${EOS_KB_COMMAND:-$ROOT/scripts/kb}"
+WORK_KB="${EOS_WORK_KNOWLEDGE_ROOT:-$HOME/work/knowledge}"
+PERSONAL_KB="${EOS_PERSONAL_KNOWLEDGE_ROOT:-$HOME/personal/knowledge}"
+status=0
+
+"$KB" audit --kb "$WORK_KB" || status=1
+"$KB" audit --kb "$PERSONAL_KB" || status=1
+exit "$status"

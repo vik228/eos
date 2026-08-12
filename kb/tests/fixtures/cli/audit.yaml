@@ -1,0 +1,30 @@
+schema_version: 1
+command: audit
+command_path: ["audit"]
+owner: Task 6
+argv: ["audit","--kb","${TMP}/index","--source-root","${TMP}/source","--now","2026-01-01T00:00:00+00:00"]
+cases:
+  success:
+    argv: ["audit","--kb","${TMP}/index","--source-root","${TMP}/source","--now","2026-01-01T00:00:00+00:00"]
+    exit_code: 0
+    stdout: "knowledge freshness is fresh\n"
+    stderr: ""
+  validation_failure:
+    argv: ["audit","--kb","${TMP}/missing","--source-root","${TMP}"]
+    exit_code: 3
+    stdout: ""
+    stderr: "error[freshness.index_missing]: knowledge index is missing; run kb index\n"
+  recovery:
+    recovery: not_applicable
+  output_shape:
+    variants:
+      - format: text
+        argv: ["audit","--kb","${TMP}/index","--source-root","${TMP}/source","--now","2026-01-01T00:00:00+00:00"]
+        exit_code: 0
+        stdout: "knowledge freshness is fresh\n"
+        stderr: ""
+      - format: json
+        argv: ["audit","--kb","${TMP}/index","--source-root","${TMP}/source","--now","2026-01-01T00:00:00+00:00","--json"]
+        exit_code: 0
+        stdout: "{\"command\": \"audit\", \"data\": {\"concepts\": [], \"contradictions\": [], \"coverage\": [], \"external_sources\": [], \"generated_at\": \"2026-01-01T00:00:00+00:00\", \"index_manifest_hash\": \"aeaa3f3b5571480daf8f2c4feb09bf8285596d446bef6089cae800ff3ff565c8\", \"overall\": \"fresh\", \"schema_version\": 1, \"sources\": [], \"time\": [], \"warnings\": []}, \"exit_code\": 0, \"message\": \"knowledge freshness is fresh\", \"status\": \"audited\"}\n"
+        stderr: ""

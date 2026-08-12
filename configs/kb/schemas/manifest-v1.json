@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://eos.dev/schemas/manifest-v1.json",
+  "title": "EOS generated knowledge manifest",
+  "type": "object",
+  "required": ["schema_version", "concepts", "routers"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "concepts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "resource", "content_hash", "metadata_hash"],
+        "properties": {
+          "path": {"type": "string", "minLength": 1},
+          "resource": {"type": ["string", "null"]},
+          "content_hash": {"$ref": "#/$defs/content_hash"},
+          "metadata_hash": {"$ref": "#/$defs/sha256"},
+          "source_blobs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["path", "blob_hash"],
+              "properties": {
+                "path": {"type": "string", "minLength": 1},
+                "blob_hash": {"$ref": "#/$defs/git_object_id"}
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "routers": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["input_hash", "content_hash", "inputs"],
+        "properties": {
+          "input_hash": {"$ref": "#/$defs/sha256"},
+          "content_hash": {"$ref": "#/$defs/sha256"},
+          "inputs": {
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "required": ["path", "metadata_hash"],
+                  "properties": {
+                    "path": {"type": "string", "minLength": 1},
+                    "metadata_hash": {"$ref": "#/$defs/sha256"}
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": ["directory"],
+                  "properties": {
+                    "directory": {"type": "string", "minLength": 1}
+                  },
+                  "additionalProperties": false
+                }
+              ]
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "git_object_id": {"type": "string", "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"},
+    "content_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  },
+  "additionalProperties": false
+}
