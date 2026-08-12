@@ -165,14 +165,33 @@ the proposed changes, validates the layout, and previews it before applying.
 
 ### First-time use
 
-Bootstrap installs the skill into all supported agent profiles:
+For a new installation, launch agent-assisted setup directly from the clone:
 
 ```bash
-bootstrap/bootstrap.sh
+git clone https://github.com/vik228/eos.git ~/personal/eos
+cd ~/personal/eos
+scripts/eos setup
 ```
 
-Restart the agent after installation so it refreshes its skill catalog. Invoke
-the skill explicitly or describe the same intent naturally:
+EOS detects Claude and Codex. If both are installed, it asks which agent should
+configure the machine. It creates safe local defaults, installs complete skill
+packages into the selected agent environment, and launches a fresh process, so
+no manual restart or skill invocation is required.
+
+The launched agent explicitly uses both `branching-discussion` and
+`configure-eos-workspace`. It conducts the exploratory interview, shows the
+proposed files and layout, waits for approval, and only then runs full bootstrap
+and verification.
+
+To choose the agent without a prompt:
+
+```bash
+scripts/eos setup --agent claude
+scripts/eos setup --agent codex
+```
+
+For an already bootstrapped installation, the skill may also be invoked
+directly:
 
 ```text
 Use $configure-eos-workspace to create a work profile for backend development.

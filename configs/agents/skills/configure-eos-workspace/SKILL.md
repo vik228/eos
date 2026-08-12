@@ -33,7 +33,11 @@ accessible to people who do not know shell, tmux, YAML, or agent configuration.
    non-technical language.
 8. Apply agent context with `EOS_PROFILE=<name>
    scripts/install-agent-instructions` after confirmation.
-9. Report the exact launch command, normally `EOS_PROFILE=<name> <workspace>`.
+9. For a first-run setup, run `bootstrap/bootstrap.sh` only after approval. Do
+   not let generic placeholder identity or paths become the intended final
+   configuration.
+10. Run `bootstrap/verify.sh` and report the exact launch command, normally
+    `EOS_PROFILE=<name> <workspace>`.
 
 ## Guardrails
 

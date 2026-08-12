@@ -1,5 +1,19 @@
 # Install
 
+## Agent-assisted first run
+
+```bash
+git clone https://github.com/vik228/eos.git ~/personal/eos
+cd ~/personal/eos
+scripts/eos setup
+```
+
+This is the recommended path for a custom profile. EOS installs the required
+skills and launches Claude or Codex to conduct the setup conversation. Full
+bootstrap runs after the user approves the generated profile.
+
+## Manual installation
+
 1. Confirm the repo is at `~/personal/eos`.
 2. Confirm native Homebrew exists at `/opt/homebrew/bin/brew`.
 3. Run:

@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="${EOS_ROOT:-$HOME/personal/eos}"
+export EOS_ROOT="$ROOT"
+
+usage() { echo "usage: eos setup [--agent claude|codex] [--dry-run]" >&2; }
+
+agent="${EOS_SETUP_AGENT:-}"
+dry_run="${EOS_SETUP_DRY_RUN:-0}"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --agent) agent="${2:-}"; shift 2 ;;
+    --dry-run) dry_run=1; shift ;;
+    *) usage; exit 2 ;;
+  esac
+done
+
+claude_bin="${CLAUDE_BIN:-$ROOT/bin/claude}"
+codex_bin="${CODEX_BIN:-$(command -v codex 2>/dev/null || true)}"
+has_claude=0; has_codex=0
+[[ -x "$claude_bin" ]] && "$claude_bin" --version >/dev/null 2>&1 && has_claude=1 || true
+[[ -n "$codex_bin" && -x "$codex_bin" ]] && has_codex=1
+
+if [[ -z "$agent" ]]; then
+  if [[ "$has_claude" == 1 && "$has_codex" == 1 ]]; then
+    [[ -t 0 ]] || { echo "both Claude and Codex found; pass --agent claude|codex" >&2; exit 2; }
+    printf 'Choose the agent that will configure EOS:\n  1. Claude\n  2. Codex\n> '
+    read -r choice
+    case "$choice" in 1|claude|Claude) agent=claude ;; 2|codex|Codex) agent=codex ;; *) echo "invalid choice" >&2; exit 2 ;; esac
+  elif [[ "$has_claude" == 1 ]]; then agent=claude
+  elif [[ "$has_codex" == 1 ]]; then agent=codex
+  else
+    echo "Claude or Codex is required. Install one, or run scripts/install-agent-clis." >&2
+    exit 1
+  fi
+fi
+[[ "$agent" == claude || "$agent" == codex ]] || { usage; exit 2; }
+[[ "$agent" != claude || "$has_claude" == 1 ]] || { echo "Claude is not installed" >&2; exit 1; }
+[[ "$agent" != codex || "$has_codex" == 1 ]] || { echo "Codex is not installed" >&2; exit 1; }
+
+mkdir -p "$HOME/.config/eos/profiles" "$HOME/personal/knowledge" "$HOME/work/knowledge"
+local_config="${EOS_SETUP_LOCAL_CONFIG:-$ROOT/.eos.local}"
+if [[ ! -f "$local_config" ]]; then
+  install -m 0600 "$ROOT/eos.local.example" "$local_config"
+  echo "created local machine defaults: $local_config"
+fi
+
+"$ROOT/scripts/install-work-knowledge-indexes"
+"$ROOT/scripts/install-personal-knowledge-indexes"
+"$ROOT/scripts/install-agent-instructions" --agent "$agent"
+
+prompt='Use $branching-discussion and $configure-eos-workspace to configure this EOS installation from scratch. Ask one exploratory question at a time about my identity, repositories, tools, workspace layout, knowledge management, and how agents should respond. Keep private details only in local profile files. Show the complete proposed setup and workspace preview, and obtain my explicit approval before applying it. After approval, run the full EOS bootstrap and verification, then return the exact profile launch command.'
+
+echo "Launching $agent for agent-assisted EOS configuration..."
+if [[ "$dry_run" == 1 ]]; then
+  printf 'agent=%s\nprompt=%s\n' "$agent" "$prompt"
+  exit 0
+fi
+
+case "$agent" in
+  claude)
+    exec env CLAUDE_CONFIG_DIR="$HOME/.claude-personal" "$claude_bin" --permission-mode auto "$prompt"
+    ;;
+  codex)
+    exec env CODEX_HOME="$HOME/.codex-personal" "$codex_bin" --cd "$ROOT" --sandbox danger-full-access --ask-for-approval never "$prompt"
+    ;;
+esac

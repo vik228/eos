@@ -17,6 +17,7 @@ EOS commands:
   eos kb <command>
   eos profile init <name> | list | show [name]
   eos workspace validate|preview|launch <name>
+  eos setup [--agent claude|codex]
   eos agent doctor
   eos doctor
 USAGE
@@ -84,6 +85,10 @@ case "$cmd" in
     ;;
   doctor)
     doctor
+    ;;
+  setup)
+    shift
+    exec "$ROOT/scripts/eos-setup" "$@"
     ;;
   kb)
     shift

@@ -75,12 +75,14 @@ assert all(event in settings["hooks"] for event in ("InstructionsLoaded", "Sessi
 assert any("scripts/personal-kb-capture" in hook["command"] for entry in settings["hooks"]["PreCompact"] for hook in entry["hooks"])
 assert any("scripts/personal-kb-capture" in hook["command"] for entry in settings["hooks"]["SessionEnd"] for hook in entry["hooks"])
 for relative in (
-    ".gemini/skills/knowledge-management/SKILL.md",
-    ".gemini/antigravity-ide/skills/bug-investigation/SKILL.md",
-    ".config/antigravity/skills/knowledge-management/SKILL.md",
-    ".config/agy/skills/bug-investigation/SKILL.md",
-    ".antigravity/skills/knowledge-management/SKILL.md",
+    ".gemini/skills/knowledge-management",
+    ".gemini/antigravity-ide/skills/bug-investigation",
+    ".config/antigravity/skills/knowledge-management",
+    ".config/agy/skills/bug-investigation",
+    ".antigravity/skills/knowledge-management",
 ):
-    assert (home / relative).is_symlink(), relative
+    skill = home / relative
+    assert skill.is_symlink(), relative
+    assert (skill / "SKILL.md").is_file(), relative
 PY
 echo "claude hooks ok"

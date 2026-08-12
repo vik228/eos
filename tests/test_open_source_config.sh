@@ -21,7 +21,7 @@ fi
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
-HOME="$tmp/home" EOS_ROOT="$ROOT" EOS_CONFIG_FILE="$tmp/missing" EOS_GENERATED_DIR="$tmp/generated" \
+env -i HOME="$tmp/home" PATH="$PATH" EOS_ROOT="$ROOT" EOS_CONFIG_FILE="$tmp/missing" EOS_GENERATED_DIR="$tmp/generated" \
   "$ROOT/scripts/render-local-config" >/dev/null
 grep -q 'you@company.example' "$tmp/generated/git/gitconfig-work"
 grep -q 'you@example.com' "$tmp/generated/git/gitconfig-personal"

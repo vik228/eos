@@ -3,6 +3,12 @@ set -euo pipefail
 
 ROOT="${EOS_ROOT:-$HOME/personal/eos}"
 source "$ROOT/scripts/lib-eos-config.sh"
+target_agent="${EOS_AGENT_INSTALL_TARGET:-all}"
+if [[ "${1:-}" == "--agent" ]]; then target_agent="${2:-}"; shift 2; fi
+[[ "$target_agent" == all || "$target_agent" == claude || "$target_agent" == codex || "$target_agent" == gemini || "$target_agent" == opencode ]] || {
+  echo "usage: install-agent-instructions [--agent claude|codex|gemini|opencode]" >&2
+  exit 2
+}
 "$ROOT/scripts/render-local-config"
 GENERATED="${EOS_GENERATED_DIR:-$HOME/.config/eos/generated}/agents"
 BACKUP_ROOT="$ROOT/backups/agent-instructions/$(date +%Y%m%d-%H%M%S)"
@@ -30,23 +36,36 @@ link_file() {
   echo "linked: $link -> $target"
 }
 
-link_file "$HOME/.codex/AGENTS.md" "$GENERATED/AGENTS.md"
-link_file "$HOME/.codex-work/AGENTS.md" "$GENERATED/AGENTS.md"
-link_file "$HOME/.codex-personal/AGENTS.md" "$GENERATED/AGENTS.md"
+skill_bases=()
+if [[ "$target_agent" == all || "$target_agent" == codex ]]; then
+  link_file "$HOME/.codex/AGENTS.md" "$GENERATED/AGENTS.md"
+  link_file "$HOME/.codex-work/AGENTS.md" "$GENERATED/AGENTS.md"
+  link_file "$HOME/.codex-personal/AGENTS.md" "$GENERATED/AGENTS.md"
+  skill_bases+=("$HOME/.codex" "$HOME/.codex-work" "$HOME/.codex-personal")
+fi
 
-link_file "$HOME/.opencode/AGENTS.md" "$GENERATED/AGENTS.md"
-link_file "$HOME/.opencode-work/AGENTS.md" "$GENERATED/AGENTS.md"
-link_file "$HOME/.opencode-personal/AGENTS.md" "$GENERATED/AGENTS.md"
+if [[ "$target_agent" == all || "$target_agent" == opencode ]]; then
+  link_file "$HOME/.opencode/AGENTS.md" "$GENERATED/AGENTS.md"
+  link_file "$HOME/.opencode-work/AGENTS.md" "$GENERATED/AGENTS.md"
+  link_file "$HOME/.opencode-personal/AGENTS.md" "$GENERATED/AGENTS.md"
+  skill_bases+=("$HOME/.opencode" "$HOME/.opencode-work" "$HOME/.opencode-personal")
+fi
 
-link_file "$HOME/.gemini/GEMINI.md" "$GENERATED/GEMINI.md"
+if [[ "$target_agent" == all || "$target_agent" == gemini ]]; then
+  link_file "$HOME/.gemini/GEMINI.md" "$GENERATED/GEMINI.md"
+  skill_bases+=("$HOME/.gemini" "$HOME/.gemini/antigravity-ide" "$HOME/.config/antigravity" "$HOME/.config/agy" "$HOME/.antigravity")
+fi
 
-link_file "$HOME/.claude/CLAUDE.md" "$GENERATED/CLAUDE.md"
-link_file "$HOME/.claude-work/CLAUDE.md" "$GENERATED/CLAUDE.md"
-link_file "$HOME/.claude-personal/CLAUDE.md" "$GENERATED/CLAUDE.md"
+if [[ "$target_agent" == all || "$target_agent" == claude ]]; then
+  link_file "$HOME/.claude/CLAUDE.md" "$GENERATED/CLAUDE.md"
+  link_file "$HOME/.claude-work/CLAUDE.md" "$GENERATED/CLAUDE.md"
+  link_file "$HOME/.claude-personal/CLAUDE.md" "$GENERATED/CLAUDE.md"
+  skill_bases+=("$HOME/.claude" "$HOME/.claude-work" "$HOME/.claude-personal")
+fi
 
 install_skill() {
   local base="$1" name="$2"
-  link_file "$base/skills/$name/SKILL.md" "$ROOT/configs/agents/skills/$name/SKILL.md"
+  link_file "$base/skills/$name" "$ROOT/configs/agents/skills/$name"
 }
 
 # Discovered from the skills directory rather than hardcoded, so a new skill is
@@ -57,12 +76,14 @@ skill_names() {
     | LC_ALL=C sort
 }
 
-for base in "$HOME/.claude" "$HOME/.claude-work" "$HOME/.claude-personal" "$HOME/.codex" "$HOME/.codex-work" "$HOME/.codex-personal" "$HOME/.gemini" "$HOME/.gemini/antigravity-ide" "$HOME/.config/antigravity" "$HOME/.config/agy" "$HOME/.antigravity" "$HOME/.opencode" "$HOME/.opencode-work" "$HOME/.opencode-personal"; do
+for base in "${skill_bases[@]}"; do
   while IFS= read -r skill_name; do
     install_skill "$base" "$skill_name"
   done < <(skill_names)
 done
 
-EOS_ROOT="$ROOT" "$ROOT/scripts/merge-agent-settings"
+if [[ "$target_agent" == all || "$target_agent" == claude ]]; then
+  EOS_ROOT="$ROOT" "$ROOT/scripts/merge-agent-settings"
+fi
 
 echo "agent instructions installed"

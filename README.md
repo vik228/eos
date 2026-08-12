@@ -123,6 +123,34 @@ The main ownership boundaries are:
 EOS currently targets macOS on Apple Silicon and expects Homebrew at
 `/opt/homebrew/bin/brew`.
 
+### Recommended: agent-assisted setup
+
+A new user who already has Claude or Codex installed only needs:
+
+```bash
+git clone https://github.com/vik228/eos.git ~/personal/eos
+cd ~/personal/eos
+scripts/eos setup
+```
+
+EOS detects the available agents, asks which one to use when both exist,
+installs the shared instructions and complete skill packages, and launches a
+fresh agent session with `branching-discussion` and
+`configure-eos-workspace`. The agent then asks one question at a time, builds a
+custom profile, shows the proposed files and workspace preview, obtains
+approval, and runs full bootstrap and verification.
+
+Choose explicitly when desired:
+
+```bash
+scripts/eos setup --agent claude
+scripts/eos setup --agent codex
+```
+
+No YAML or profile-directory knowledge is required.
+
+### Manual setup
+
 ```bash
 git clone <repository-url> ~/personal/eos
 cd ~/personal/eos
