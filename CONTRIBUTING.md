@@ -38,8 +38,10 @@ configuration.
 
 5. Push the branch and open a pull request against `main`.
 
-Direct pushes to `main` are not allowed. Pull requests require an approving
-review, resolved conversations, and a current approval after material changes.
+Direct pushes to `main` are not allowed. Every change must use a pull request
+with resolved conversations. Reviews are encouraged and can become mandatory
+when the project has more than one maintainer; a required external approval
+would deadlock a solo-maintainer repository today.
 
 ## Pull Request Expectations
 
