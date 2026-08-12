@@ -1,8 +1,14 @@
 # EOS Agent Knowledge System
 
-EOS provides one local, Markdown-canonical knowledge system for Claude, Codex,
-Gemini, and Antigravity. SQLite indexes, freshness reports, session records,
-approval logs, and generated routers are derived or auditable state.
+EOS provides one local, OKF-compatible and Markdown-canonical knowledge system
+for Claude, Codex, Gemini, and Antigravity. Open Knowledge Format concepts and
+routers remain portable source files. SQLite indexes, freshness reports,
+session records, approval logs, and generated routers are derived or auditable
+state.
+
+EOS uses standard OKF metadata where relevant and keeps its extensions under an
+`eos` namespace. Governance adds approval and trust behavior without replacing
+the portable OKF bundle with a proprietary knowledge store.
 
 ## Daily Workflow
 
