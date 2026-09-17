@@ -1,0 +1,210 @@
+#!/usr/bin/env bash
+# agent-run - launch a coding agent (codex | antigravity | claude) DETACHED on a written brief,
+# through the EOS per-agent wrappers (so the KB session lifecycle, doctor and audit still apply),
+# and manage the resulting run (status, log, wait, stop, list).
+#
+# Why: a coordinator agent hands implementation or review work to another model and needs it to
+# (1) survive the coordinator's shell, (2) read a durable brief from the KB, (3) work in its own git
+# worktree and database, (4) leave one hook-clean commit with a fixed subject and no trailer lines,
+# (5) print a fixed acceptance section. This script codifies that contract once.
+#
+# Usage:
+#   agent-run start --agent codex --profile work --model gpt-5.6-sol \
+#       --brief ~/work/knowledge/logs/<brief>.md \
+#       --worktree /path/to/worktree            # existing, OR:
+#       --new-worktree t6/xyz --base <sha> --repo /path/to/repo   # created under <repo>/.claude/worktrees/<slug>
+#       [--db nova_agent_xyz] [--subject "refactor: NOVA-26 ..."] [--effort medium]
+#       [--review <git range>] [--extra "more instructions"] [--tag c7f]
+#   agent-run status <run-id> | log <run-id> [-f] | wait <run-id> | stop <run-id> | list
+#
+# Runs live under ${EOS_AGENT_RUNS_DIR:-$HOME/.config/eos/agent-runs}/<run-id>/ with meta.json,
+# prompt.txt, output.log, pid. The run id is printed by `start`.
+#
+# Environment (all optional):
+#   EOS_AGENT_RUNS_DIR          where runs are recorded (default ~/.config/eos/agent-runs)
+#   AGENT_RUN_TIMEOUT           Antigravity print-mode timeout (default 8h; agy's own default is 5m)
+#   AGENT_RUN_DB_ENV            env var name the agent should export for its database (default DATABASE_URL)
+#   AGENT_RUN_DB_URL_TEMPLATE   URL template for --db, `{db}` is replaced (default postgresql://localhost:5432/{db})
+set -euo pipefail
+ROOT="${EOS_ROOT:-$HOME/personal/eos}"
+source "$ROOT/scripts/lib-eos-config.sh"
+RUNS_DIR="${EOS_AGENT_RUNS_DIR:-$HOME/.config/eos/agent-runs}"
+[[ -n "${AGENT_RUN_DB_URL_TEMPLATE:-}" ]] || AGENT_RUN_DB_URL_TEMPLATE='postgresql://localhost:5432/{db}'
+mkdir -p "$RUNS_DIR"
+
+die() { echo "agent-run: $*" >&2; exit 2; }
+usage() { sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+
+# ---------- run bookkeeping ----------
+run_dir() { printf '%s/%s' "$RUNS_DIR" "$1"; }
+run_pid() { cat "$(run_dir "$1")/pid" 2>/dev/null || true; }
+run_alive() { local p; p="$(run_pid "$1")"; [[ -n "$p" ]] && kill -0 "$p" 2>/dev/null; }
+run_meta() { cat "$(run_dir "$1")/meta.json" 2>/dev/null || die "no such run: $1"; }
+
+cmd_list() {
+  local d id state
+  printf '%-28s %-8s %-12s %-14s %s\n' RUN STATE AGENT MODEL WORKTREE
+  for d in "$RUNS_DIR"/*/; do
+    [[ -d "$d" && -f "$d/meta.json" ]] || continue
+    id="$(basename "$d")"
+    if run_alive "$id"; then state=running; else state="exit:$(cat "$d/exit" 2>/dev/null || echo '?')"; fi
+    python3 - "$d/meta.json" "$id" "$state" <<'PY'
+import json,sys
+m=json.load(open(sys.argv[1])); print(f"{sys.argv[2]:<28} {sys.argv[3]:<8} {m['agent']:<12} {m.get('model') or '-':<14} {m.get('worktree') or '-'}")
+PY
+  done
+}
+cmd_status() {
+  local id="$1"; run_meta "$id" | python3 -c 'import json,sys; m=json.load(sys.stdin); [print(f"{k}: {v}") for k,v in m.items()]'
+  if run_alive "$id"; then echo "state: running (pid $(run_pid "$id"))"; else echo "state: exited (exit $(cat "$(run_dir "$id")/exit" 2>/dev/null || echo '?'))"; fi
+  local wt; wt="$(run_meta "$id" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("worktree") or "")')"
+  if [[ -n "$wt" && -d "$wt/.git" || -f "$wt/.git" ]]; then
+    echo "worktree head: $(git -C "$wt" log --oneline -1 2>/dev/null)"; echo "worktree dirty files: $(git -C "$wt" status --short 2>/dev/null | wc -l | tr -d ' ')"
+  fi
+  echo "log: $(run_dir "$id")/output.log ($(wc -l < "$(run_dir "$id")/output.log" 2>/dev/null || echo 0) lines)"
+}
+cmd_log() { local id="$1"; shift; tail "${@:--n 40}" "$(run_dir "$id")/output.log"; }
+cmd_wait() {
+  local id="$1" every="${2:-30}"
+  while run_alive "$id"; do sleep "$every"; done
+  echo "run $id exited with $(cat "$(run_dir "$id")/exit" 2>/dev/null || echo '?')"; cmd_log "$id" -n 60
+}
+cmd_stop() {
+  local id="$1" p; p="$(run_pid "$id")"; [[ -n "$p" ]] || die "no pid for $id"
+  pkill -TERM -P "$p" 2>/dev/null || true; kill -TERM "$p" 2>/dev/null || true
+  sleep 2; run_alive "$id" && { pkill -KILL -P "$p" 2>/dev/null || true; kill -KILL "$p" 2>/dev/null || true; }
+  echo "stopped $id"
+}
+
+# ---------- prompt template ----------
+compose_prompt() {
+  # $1 brief $2 worktree $3 branch $4 base $5 db $6 subject $7 review_range $8 extra
+  local brief="$1" wt="$2" branch="$3" base="$4" db="$5" subject="$6" review="$7" extra="$8"
+  local db_env="${AGENT_RUN_DB_ENV:-DATABASE_URL}" db_url="${AGENT_RUN_DB_URL_TEMPLATE//'{db}'/$db}"
+  if [[ -n "$review" ]]; then
+    cat <<EOF
+Review the changes in git range $review inside the worktree $wt against the brief at $brief.
+Work only in that worktree; do not modify any file; never push. Read the brief fully, then every file the range touches.
+Report, in this order: (1) requirements from the brief that the diff does NOT meet, each with file:line evidence; (2) correctness bugs (a concrete input -> wrong behaviour), most severe first; (3) security or isolation gaps; (4) tests that are missing or weakened; (5) anything that contradicts AGENTS.md or .claude/CLAUDE.md. Then a one-paragraph verdict: merge, fix-then-merge, or redo. No praise, no summary of what the diff does. Print the report as the final message.
+EOF
+  else
+    cat <<EOF
+Implement the brief at $brief in full.
+You are in the git worktree $wt on branch $branch at HEAD $base; work only here, never cd to the main repository, never push, never touch .env, never use bare git stash.
+$( [[ -n "$db" ]] && echo "Create and use only your own database $db (export $db_env=$db_url in every shell that runs tests or hooks); never run migrations against any other database.")
+Read AGENTS.md and the Module Structure section of .claude/CLAUDE.md first (if they exist), then every file the brief names, then the brief's ground rules. Follow its work list in order.
+Commit work in progress after each work-list item with --no-verify so an interruption loses nothing. Finish with ONE squashed commit off $base that passes every pre-commit hook normally (if a formatter or the secrets scanner modifies files, git add -A and commit again).$( [[ -n "$subject" ]] && echo " Commit subject exactly: $subject") The commit message is a plain body with no trailer lines of any kind.
+End by printing the brief's acceptance items verbatim as your final message.
+EOF
+  fi
+  if [[ -n "$extra" ]]; then printf '\n%s\n' "$extra"; fi
+  return 0
+}
+
+# ---------- launch ----------
+cmd_start() {
+  local agent="" profile="work" model="" brief="" wt="" new_branch="" base="" repo="" db="" subject="" effort="" review="" extra="" tag="" prompt_override="" dry_run=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --dry-run) dry_run=1; shift ;;
+      --agent) agent="$2"; shift 2 ;;
+      --profile) profile="$2"; shift 2 ;;
+      --model) model="$2"; shift 2 ;;
+      --brief) brief="$2"; shift 2 ;;
+      --worktree) wt="$2"; shift 2 ;;
+      --new-worktree) new_branch="$2"; shift 2 ;;
+      --base) base="$2"; shift 2 ;;
+      --repo) repo="$2"; shift 2 ;;
+      --db) db="$2"; shift 2 ;;
+      --subject) subject="$2"; shift 2 ;;
+      --effort) effort="$2"; shift 2 ;;
+      --review) review="$2"; shift 2 ;;
+      --extra) extra="$2"; shift 2 ;;
+      --tag) tag="$2"; shift 2 ;;
+      --prompt) prompt_override="$2"; shift 2 ;;
+      -h|--help) usage 0 ;;
+      *) die "unknown start option: $1" ;;
+    esac
+  done
+  [[ -n "$agent" ]] || die "--agent is required (codex | antigravity | claude)"
+  [[ -n "$brief" || -n "$prompt_override" ]] || die "--brief PATH (or --prompt) is required"
+  [[ -z "$brief" || -f "$brief" ]] || die "brief not found: $brief"
+  [[ "$profile" == work || "$profile" == personal ]] || die "--profile must be work or personal"
+
+  # worktree
+  if [[ -n "$new_branch" ]]; then
+    [[ -n "$repo" && -d "$repo" ]] || die "--new-worktree needs --repo DIR"
+    base="${base:-$(git -C "$repo" rev-parse --short HEAD)}"
+    local slug; slug="$(printf '%s' "$new_branch" | tr '/' '-')"
+    wt="$repo/.claude/worktrees/$slug"
+    [[ -e "$wt" ]] && die "worktree path exists: $wt"
+    if [[ "$dry_run" == 1 ]]; then echo "[dry-run] would: git -C $repo worktree add $wt -b $new_branch $base"; else git -C "$repo" worktree add "$wt" -b "$new_branch" "$base" >/dev/null; fi
+  fi
+  [[ -n "$wt" && ( -d "$wt" || "$dry_run" == 1 ) ]] || die "--worktree DIR (existing) or --new-worktree BRANCH --repo DIR is required"
+  local branch; branch="${new_branch:-$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')}"
+  base="${base:-$(git -C "$wt" rev-parse --short HEAD 2>/dev/null || echo '?')}"
+
+  # run dir
+  local id; id="$(date +%Y%m%d-%H%M%S)-${agent}${tag:+-$tag}"
+  local dir; dir="$(run_dir "$id")"
+  local prompt; if [[ -n "$prompt_override" ]]; then prompt="$prompt_override"; else prompt="$(compose_prompt "$brief" "$wt" "$branch" "$base" "$db" "$subject" "$review" "$extra")"; fi
+
+  # agent command (through the EOS wrapper so kb session/doctor/audit apply)
+  local -a cmd; local kb
+  if [[ "$profile" == work ]]; then kb="${EOS_WORK_KNOWLEDGE_ROOT}"; else kb="${EOS_PERSONAL_KNOWLEDGE_ROOT}"; fi
+  case "$agent" in
+    codex)
+      cmd=(env "CODEX_WORK_DIR=$wt" "EOS_AGENT_CWD=$wt" "$ROOT/scripts/codex-$profile" exec)
+      [[ -n "$model" ]] && cmd+=(-m "$model")
+      [[ -n "$effort" ]] && cmd+=(-c "model_reasoning_effort=\"$effort\"")
+      cmd+=("$prompt") ;;
+    antigravity)
+      cmd=(env "EOS_AGENT_CWD=$wt" "EOS_KB_ROOT=$kb" "$ROOT/scripts/antigravity-full" --print "$prompt" --print-timeout "${AGENT_RUN_TIMEOUT:-8h}" --output-format text)
+      [[ -n "$model" ]] && cmd+=(--model "$model")
+      [[ -n "$effort" ]] && cmd+=(--effort "$effort") ;;
+    claude)
+      cmd=(env "EOS_AGENT_CWD=$wt" "$ROOT/scripts/claude-$profile" -p "$prompt" --output-format text)
+      [[ -n "$model" ]] && cmd+=(--model "$model") ;;
+    *) die "unknown agent: $agent" ;;
+  esac
+  if [[ "$dry_run" == 1 ]]; then
+    echo "[dry-run] run id would be: $id"; echo "[dry-run] worktree: $wt ($branch @ $base)"
+    echo "[dry-run] command:"; printf '  %q' "${cmd[@]}"; echo
+    echo "[dry-run] prompt:"; printf '%s\n' "$prompt" | sed 's/^/  | /'
+    return 0
+  fi
+
+  mkdir -p "$dir"
+  printf '%s\n' "$prompt" > "$dir/prompt.txt"
+  python3 - "$dir/meta.json" "$id" "$agent" "$profile" "$model" "$brief" "$wt" "$branch" "$base" "$db" "$subject" "$review" <<'PY'
+import json,sys,datetime
+k=["id","agent","profile","model","brief","worktree","branch","base","db","subject","review"]
+m=dict(zip(k,sys.argv[2:])); m["started_at"]=datetime.datetime.now().isoformat(timespec="seconds")
+json.dump(m,open(sys.argv[1],"w"),indent=1)
+PY
+  # detach (macOS has no setsid): nohup + background + disown; stdin closed so wrappers never wait on it
+  (
+    cd "$wt"
+    nohup bash -c 'set +e; "$@"; rc=$?; echo "$rc" > "'"$dir"'/exit"; exit $rc' _ "${cmd[@]}" < /dev/null > "$dir/output.log" 2>&1 &
+    echo $! > "$dir/pid"
+  )
+  disown 2>/dev/null || true
+  echo "$id"
+  echo "  agent=$agent model=${model:--} profile=$profile"
+  echo "  worktree=$wt ($branch @ $base)"
+  echo "  log=$dir/output.log"
+  echo "  status: agent-run status $id | wait: agent-run wait $id | stop: agent-run stop $id"
+}
+
+sub="${1:-}"; [[ -n "$sub" ]] || usage 2
+case "$sub" in
+  start) shift; cmd_start "$@" ;;
+  status) shift; [[ $# -ge 1 ]] || die "status needs a run id"; cmd_status "$1" ;;
+  log) shift; [[ $# -ge 1 ]] || die "log needs a run id"; id="$1"; shift; cmd_log "$id" "$@" ;;
+  wait) shift; [[ $# -ge 1 ]] || die "wait needs a run id"; cmd_wait "$@" ;;
+  stop) shift; [[ $# -ge 1 ]] || die "stop needs a run id"; cmd_stop "$1" ;;
+  list) cmd_list ;;
+  -h|--help|help) usage 0 ;;
+  --*) cmd_start "$@" ;;   # `agent-run --agent ...` == `agent-run start ...`
+  *) die "unknown subcommand: $sub" ;;
+esac
