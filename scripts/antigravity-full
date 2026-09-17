@@ -3,6 +3,13 @@ set -euo pipefail
 ROOT="${EOS_ROOT:-$HOME/personal/eos}"
 source "$ROOT/scripts/lib-agent-session.sh"
 cwd="${EOS_AGENT_CWD:-$PWD}"
+# Antigravity holds a single account (the personal one). Refuse to start inside the work tree
+# unless explicitly overridden, so a work session never runs under the personal login.
+work_root="${EOS_WORK_ROOT:-$HOME/work}"
+if [[ ( "$cwd" == "$work_root" || "$cwd" == "$work_root"/* || "${EOS_KB_ROOT:-}" == "${EOS_WORK_KNOWLEDGE_ROOT:-$HOME/work/knowledge}" ) && "${EOS_ALLOW_PERSONAL_AGENT_IN_WORK:-0}" != 1 && "${1:-}" != "--dry-run" ]]; then
+  echo "antigravity-full: Antigravity is a single-account (personal) agent and must not run from the work tree ($cwd). Use codex-work or claude-work; override with EOS_ALLOW_PERSONAL_AGENT_IN_WORK=1." >&2
+  exit 1
+fi
 if [[ -n "${EOS_KB_ROOT:-}" ]]; then
   kb="$EOS_KB_ROOT"
 elif [[ "$cwd" == "$HOME/work" || "$cwd" == "$HOME/work"/* ]]; then

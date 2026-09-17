@@ -130,6 +130,11 @@ cmd_start() {
   [[ -n "$brief" || -n "$prompt_override" ]] || die "--brief PATH (or --prompt) is required"
   [[ -z "$brief" || -f "$brief" ]] || die "brief not found: $brief"
   [[ "$profile" == work || "$profile" == personal ]] || die "--profile must be work or personal"
+  # Single-account agents: Antigravity and OpenCode hold one login (the personal one), so they are
+  # never launched from the work profile. Work delegation uses codex and claude only.
+  if [[ "$profile" == work && ( "$agent" == antigravity || "$agent" == opencode ) && "${EOS_ALLOW_PERSONAL_AGENT_IN_WORK:-0}" != 1 ]]; then
+    die "$agent is a single-account (personal) agent and must not run from the work profile; use codex or claude (override: EOS_ALLOW_PERSONAL_AGENT_IN_WORK=1)"
+  fi
 
   # worktree
   if [[ -n "$new_branch" ]]; then

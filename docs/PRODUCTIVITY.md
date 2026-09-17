@@ -134,7 +134,14 @@ effort tier in parentheses, for example `"Gemini 3.8 Flash (Medium)"`; run `agy 
 to see the list, and do not pass `--effort` for those models. Codex's wrapper reads stdin when it is not a terminal, so
 `agent-run` always closes stdin.
 
-Antigravity launches through `antigravity-full`, which wraps the `agy` CLI with `--dangerously-skip-permissions` and adds the current workspace plus work/personal KB directories. Set `ANTIGRAVITY_SKIP_PERMISSIONS=0` for one launch if you want prompts back. The old Gemini CLI OAuth path is no longer supported for Gemini Code Assist individual accounts.
+Antigravity launches through `antigravity-full`, which wraps the `agy` CLI with `--dangerously-skip-permissions` and adds the current workspace plus work/personal KB directories. Set `ANTIGRAVITY_SKIP_PERMISSIONS=0` for one launch if you want prompts back.
+
+**Single-account agents stay personal.** Antigravity and OpenCode hold one login at a time, so
+they are never launched from the work profile or inside the work tree: `agent-run` refuses
+`--agent antigravity|opencode --profile work`, `antigravity-full` refuses under `$EOS_WORK_ROOT`,
+and `opencode-work` refuses outright. Work delegation uses Codex and Claude, which keep separate
+work and personal profiles. `EOS_ALLOW_PERSONAL_AGENT_IN_WORK=1` overrides for one launch when
+you have deliberately switched the account. The old Gemini CLI OAuth path is no longer supported for Gemini Code Assist individual accounts.
 
 ## Recommended Backend Flow
 
