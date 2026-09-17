@@ -129,7 +129,9 @@ items printed verbatim at the end. `--review RANGE` swaps in a findings-first re
 `--dry-run` prints the command and prompt without launching. Runs live under
 `~/.config/eos/agent-runs/<run-id>/` (`meta.json`, `prompt.txt`, `output.log`, `pid`, `exit`).
 Antigravity's print mode defaults to a 5-minute timeout; `agent-run` raises it via
-`AGENT_RUN_TIMEOUT` (default `8h`). Codex's wrapper reads stdin when it is not a terminal, so
+`AGENT_RUN_TIMEOUT` (default `8h`). Antigravity's `--model` takes the display name with the
+effort tier in parentheses, for example `"Gemini 3.8 Flash (Medium)"`; run `agy --print x --model ?`
+to see the list, and do not pass `--effort` for those models. Codex's wrapper reads stdin when it is not a terminal, so
 `agent-run` always closes stdin.
 
 Antigravity launches through `antigravity-full`, which wraps the `agy` CLI with `--dangerously-skip-permissions` and adds the current workspace plus work/personal KB directories. Set `ANTIGRAVITY_SKIP_PERMISSIONS=0` for one launch if you want prompts back. The old Gemini CLI OAuth path is no longer supported for Gemini Code Assist individual accounts.
