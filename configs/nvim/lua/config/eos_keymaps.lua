@@ -35,8 +35,6 @@ M.config = {
     },
   },
   agent_terminals = {
-    position = "right",
-    width = 0.42,
     profiles = {
       work = {
         claude = 'claude-work; exec zsh',
@@ -69,6 +67,7 @@ local function snacks_picker(name, opts)
 end
 
 local function toggle_explorer()
+  require("config.window_roles").focus_editor()
   if _G.Snacks and Snacks.explorer then
     return Snacks.explorer()
   end
@@ -100,26 +99,6 @@ local function current_profile()
   return "personal"
 end
 
-local function apply_strong_split_highlight(win)
-  local current = vim.api.nvim_get_option_value("winhighlight", { win = win })
-  local highlights = vim.tbl_filter(function(item)
-    return not vim.startswith(item, "WinSeparator:")
-  end, vim.split(current, ",", { plain = true, trimempty = true }))
-  table.insert(highlights, "WinSeparator:EosStrongSplit")
-  vim.api.nvim_set_option_value("winhighlight", table.concat(highlights, ","), { win = win })
-end
-
-local function style_agent_window(agent, profile)
-  local title = " AGENT: " .. string.upper(agent) .. " [" .. profile .. "] "
-  vim.opt_local.winbar = "%#EosAgentWinBar#" .. title .. "%*"
-  vim.opt_local.number = false
-  vim.opt_local.relativenumber = false
-  vim.opt_local.signcolumn = "no"
-  for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
-    apply_strong_split_highlight(win)
-  end
-end
-
 local function open_agent_terminal(agent)
   local profile = current_profile()
   local terminal_config = M.config.agent_terminals
@@ -130,30 +109,7 @@ local function open_agent_terminal(agent)
     return
   end
 
-  if _G.Snacks and Snacks.terminal then
-    local terminal = Snacks.terminal({ "zsh", "-lc", command }, {
-      cwd = vim.fn.getcwd(),
-      interactive = true,
-      auto_close = false,
-      win = {
-        position = terminal_config.position,
-        width = terminal_config.width,
-        border = "rounded",
-        title = " AGENT: " .. string.upper(agent) .. " [" .. profile .. "] ",
-        title_pos = "center",
-        wo = {
-          winhighlight = "WinSeparator:EosStrongSplit",
-        },
-      },
-    })
-    vim.schedule(function()
-      pcall(style_agent_window, agent, profile)
-    end)
-    return terminal
-  end
-
-  vim.cmd("botright vertical terminal zsh -lc " .. vim.fn.shellescape(command))
-  style_agent_window(agent, profile)
+  require("config.agent_panes").open(agent, command)
 end
 
 local function selected_or_current_lines(use_visual)
@@ -246,12 +202,21 @@ function M.setup()
 
   local keys = M.config.keys
 
-  map_all("n", keys.find_files, snacks_picker("files"), "Find files")
+  map_all("n", keys.find_files, function()
+    require("config.window_roles").focus_editor()
+    snacks_picker("files")()
+  end, "Find files")
   map_all("n", keys.toggle_explorer, toggle_explorer, "Toggle file explorer")
   map_all("n", keys.live_grep, snacks_picker("grep"), "Search in project")
   map_all("n", keys.current_buffer_search, snacks_picker("lines"), "Search current file")
-  map_all("n", keys.recent_files, snacks_picker("recent"), "Recent files")
-  map_all("n", keys.buffers, snacks_picker("buffers"), "Open buffers")
+  map_all("n", keys.recent_files, function()
+    require("config.window_roles").focus_editor()
+    snacks_picker("recent")()
+  end, "Recent files")
+  map_all("n", keys.buffers, function()
+    require("config.window_roles").focus_editor()
+    snacks_picker("buffers")()
+  end, "Open buffers")
   map_all("n", keys.save, "<cmd>write<cr>", "Save file")
   map_all("n", keys.quit, "<cmd>quit<cr>", "Quit window")
   map_all("n", keys.close_buffer, function()

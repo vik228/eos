@@ -3,11 +3,28 @@ set -euo pipefail
 
 source "${EOS_ROOT:-$HOME/personal/eos}/scripts/lib-eos-config.sh"
 
+if [[ -z "${EOS_TMUX_BIN:-}" ]]; then
+  if [[ "$(uname -s)" == Darwin && "$(uname -m)" == arm64 && -x /opt/homebrew/opt/tmux/bin/tmux ]]; then
+    EOS_TMUX_BIN=/opt/homebrew/opt/tmux/bin/tmux
+  elif [[ "$(uname -s)" == Darwin && "$(uname -m)" == x86_64 && -x /usr/local/opt/tmux/bin/tmux ]]; then
+    EOS_TMUX_BIN=/usr/local/opt/tmux/bin/tmux
+  elif command -v brew >/dev/null 2>&1 && [[ -x "$(brew --prefix tmux 2>/dev/null)/bin/tmux" ]]; then
+    EOS_TMUX_BIN="$(brew --prefix tmux)/bin/tmux"
+  else
+    EOS_TMUX_BIN="$(command -v tmux || true)"
+  fi
+fi
+export EOS_TMUX_BIN
+
 require_tmux() {
-  if ! command -v tmux >/dev/null 2>&1; then
+  if [[ -z "$EOS_TMUX_BIN" || ! -x "$EOS_TMUX_BIN" ]]; then
     echo "tmux is required but was not found in PATH" >&2
     exit 1
   fi
+}
+
+tmux_workspace() {
+  "$EOS_TMUX_BIN" -L "${EOS_TMUX_SERVER:?workspace tmux server is not configured}" "$@"
 }
 
 resolve_dir() {
@@ -39,11 +56,11 @@ run_workspace() {
     return 0
   fi
 
-  if tmux has-session -t "$session" 2>/dev/null; then
+  if tmux_workspace has-session -t "$session" 2>/dev/null; then
     if [[ "${EOS_NO_ATTACH:-0}" == "1" ]]; then
       echo "tmux session exists: $session"
     else
-      tmux attach -t "$session"
+      tmux_workspace attach -t "$session"
     fi
     return 0
   fi
@@ -51,22 +68,22 @@ run_workspace() {
   local first="${windows[0]}"
   local first_name="${first%%:*}"
   local first_cmd="${first#*:}"
-  tmux new-session -d -s "$session" -n "$first_name" -c "$dir" "$first_cmd"
+  tmux_workspace new-session -d -s "$session" -n "$first_name" -c "$dir" "$first_cmd"
 
   local index=2
   local spec name cmd
   for spec in "${windows[@]:1}"; do
     name="${spec%%:*}"
     cmd="${spec#*:}"
-    tmux new-window -t "$session:$index" -n "$name" -c "$dir" "$cmd"
+    tmux_workspace new-window -t "$session:$index" -n "$name" -c "$dir" "$cmd"
     index=$((index + 1))
   done
 
-  tmux select-window -t "$session:1"
+  tmux_workspace select-window -t "$session:1"
 
   if [[ "${EOS_NO_ATTACH:-0}" == "1" ]]; then
     echo "created tmux session: $session"
   else
-    tmux attach -t "$session"
+    tmux_workspace attach -t "$session"
   fi
 }

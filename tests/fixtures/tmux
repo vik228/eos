@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+log="${EOS_TEST_TMUX_LOG:?}"
+state="${EOS_TEST_TMUX_STATE:?}"
+printf '%s\n' "$*" >> "$log"
+
+case "$1 $2" in
+  "list-panes -a")
+    [[ ! -s "$state" ]] || cat "$state"
+    ;;
+  "split-window -h")
+    printf '%%42\n' > "$state"
+    printf '%%42\n'
+    ;;
+  "select-pane -t")
+    ;;
+  "kill-pane -t")
+    : > "$state"
+    ;;
+  *)
+    printf 'unexpected tmux invocation: %s\n' "$*" >&2
+    exit 2
+    ;;
+esac

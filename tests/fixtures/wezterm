@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ -n "${WEZTERM_UNIX_SOCKET:-}" ]]; then
+  echo "wezterm fixture inherited stale WEZTERM_UNIX_SOCKET" >&2
+  exit 3
+fi
+
+log="${EOS_TEST_WEZTERM_LOG:?}"
+state="${EOS_TEST_WEZTERM_STATE:?}"
+printf '%s\n' "$*" >> "$log"
+
+case "$*" in
+  "cli list --format json")
+    if [[ -s "$state" ]]; then
+      pane_id="$(<"$state")"
+      printf '[{"pane_id":%s}]\n' "$pane_id"
+    else
+      printf '[]\n'
+    fi
+    ;;
+  cli\ split-pane*)
+    printf '4242\n' > "$state"
+    printf '4242\n'
+    ;;
+  cli\ activate-pane*)
+    ;;
+  cli\ kill-pane*)
+    : > "$state"
+    ;;
+  *)
+    printf 'unexpected wezterm invocation: %s\n' "$*" >&2
+    exit 2
+    ;;
+esac

@@ -52,7 +52,7 @@ if [[ -n "${NVM_BIN:-}" ]]; then
   consider_candidate "$NVM_BIN/claude"
 fi
 
-for candidate in "$HOME"/.nvm/versions/node/*/bin/claude /usr/local/bin/claude /opt/homebrew/bin/claude; do
+for candidate in "$HOME"/.local/bin/claude "$HOME"/.nvm/versions/node/*/bin/claude /usr/local/bin/claude /opt/homebrew/bin/claude; do
   consider_candidate "$candidate"
 done
 

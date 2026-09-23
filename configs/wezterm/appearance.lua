@@ -65,7 +65,9 @@ function M.apply(config)
   config.color_schemes = config.color_schemes or {}
   config.color_schemes[M.glare_safe_scheme] = M.glare_safe_colors
   config.color_scheme = "Catppuccin Mocha"
-  config.inactive_pane_hsb = { saturation = 0.3, brightness = 0.85 }
+  -- Sibling editor, agent, and plot panes should keep identical colors when
+  -- focus moves; the split and pane titles already communicate ownership.
+  config.inactive_pane_hsb = { saturation = 1.0, brightness = 1.0 }
   config.window_background_opacity = 1.0
   config.window_padding = {
     left = 18,
