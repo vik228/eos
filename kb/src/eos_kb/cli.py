@@ -233,7 +233,30 @@ def _search(args: argparse.Namespace) -> CommandResult:
     try:
         route = _resolve_retrieval_route(args)
         project = args.project or (route.project if route.registered else None)
-        cards = retrieve_search(route.kb, args.query, project=project, types=args.types, components=args.components, status=args.status, freshness=args.freshness, include_draft=args.include_draft, include_deprecated=args.include_deprecated, limit=args.limit)
+        if getattr(args, "jev", False):
+            from .jev import derive_jev_profile
+            from .jev_retrieval import plan_query, rerank_results, route_components_for
+            jev_profile = getattr(args, "jev_profile", None) or derive_jev_profile(route.kb)
+            plan = plan_query(args.query, profile=jev_profile)
+            route_components: list[str] | None = None
+            if (
+                plan
+                and not args.project
+                and not args.components
+                and not args.types
+                and plan.section
+                and plan.section != "general"
+            ):
+                route_components = route_components_for(plan.section)
+            query = plan.expanded_query if plan and plan.expanded_query else args.query
+            search_components = args.components if args.components is not None else route_components
+            cards = retrieve_search(route.kb, query, project=project, types=args.types, components=search_components, status=args.status, freshness=args.freshness, include_draft=args.include_draft, include_deprecated=args.include_deprecated, limit=args.limit * 2)
+            if route_components and not cards and args.components is None:
+                cards = retrieve_search(route.kb, query, project=project, types=args.types, components=None, status=args.status, freshness=args.freshness, include_draft=args.include_draft, include_deprecated=args.include_deprecated, limit=args.limit * 2)
+            cards, _ = rerank_results(args.query, cards, profile=jev_profile, top_k=args.limit * 2)
+            cards = cards[: args.limit]
+        else:
+            cards = retrieve_search(route.kb, args.query, project=project, types=args.types, components=args.components, status=args.status, freshness=args.freshness, include_draft=args.include_draft, include_deprecated=args.include_deprecated, limit=args.limit)
     except (RegistryError, ValueError) as exc:
         message = exc.remediation if isinstance(exc, RegistryError) else str(exc)
         return CommandResult("search", ResultStatus.VALIDATION_FAILURE, message, ExitCode.VALIDATION, True, getattr(exc, "code", "search.validation"), getattr(exc, "field_path", "$.query"))
@@ -262,6 +285,36 @@ def _context(args: argparse.Namespace) -> CommandResult:
     try:
         route = _resolve_retrieval_route(args)
         project = args.project or (route.project if route.registered else None)
+        if getattr(args, "jev", False):
+            from .jev import derive_jev_profile
+            from .jev_retrieval import jev_context
+            jev_profile = getattr(args, "jev_profile", None) or derive_jev_profile(route.kb)
+            result_obj = jev_context(
+                route.kb,
+                args.query,
+                budget=args.budget,
+                profile=jev_profile,
+                project=project,
+                components=args.components,
+                use_adaptive_budget=False,
+            )
+            data = {
+                "query": args.query,
+                "budget": args.budget,
+                "estimated_units": result_obj.estimated_units,
+                "estimator": "utf8-bytes-div-2-ceil",
+                "warnings_reserved": True,
+                "warnings": list(result_obj.warnings),
+                "cards": [c.as_dict() for c in result_obj.cards],
+                "jev": {
+                    "used": result_obj.jev_used,
+                    "expanded_query": result_obj.expanded_query,
+                    "routed_section": result_obj.routed_section,
+                    "adaptive_budget": result_obj.adaptive_budget,
+                    "tokens": result_obj.jev_tokens_used,
+                },
+            }
+            return CommandResult("context", ResultStatus.CONTEXT, f"assembled {len(result_obj.cards)} result card(s) at {result_obj.estimated_units} units (jev={result_obj.jev_used})", ExitCode.SUCCESS, data=data)
         result = retrieve_context(route.kb, args.query, budget=args.budget, project=project, components=args.components)
     except (RegistryError, ValueError) as exc:
         message = exc.remediation if isinstance(exc, RegistryError) else str(exc)
@@ -638,6 +691,8 @@ def _configure_top_level_grammar(
         parser.add_argument("--include-draft", action="store_true")
         parser.add_argument("--include-deprecated", action="store_true")
         parser.add_argument("--limit", type=positive_int, default=10)
+        parser.add_argument("--jev", action="store_true", help="enable Jev semantic re-ranking and query expansion")
+        parser.add_argument("--jev-profile", choices=("work", "personal"), default=None, help="Jev API key profile; derived from the KB path when omitted")
     elif command == "show":
         parser.add_argument("concept")
         _add_kb_argument(parser)
@@ -652,6 +707,8 @@ def _configure_top_level_grammar(
         parser.add_argument("--project")
         parser.add_argument("--component", dest="components", action="append")
         parser.add_argument("--budget", type=positive_int, required=True)
+        parser.add_argument("--jev", action="store_true", help="enable Jev query expansion, routing, and re-ranking; explicit --budget is always respected")
+        parser.add_argument("--jev-profile", choices=("work", "personal"), default=None, help="Jev API key profile; derived from the KB path when omitted")
     elif command in {"status", "stale"}:
         _add_kb_argument(parser)
     elif command == "audit":

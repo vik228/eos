@@ -117,6 +117,8 @@ scripts/eos setup --agent codex
 - OKF-compatible bundle validation and generated routers.
 - Project and subject routing from a root index.
 - Budgeted retrieval and search.
+- Optional Jev decision layer for query expansion, semantic re-ranking, section
+  routing, and adaptive budgeting; plain BM25 remains the default.
 - Freshness and source-drift auditing.
 - Explicit proposal, review, approval, and promotion records.
 - Session start, checkpoint, recovery, and completion.

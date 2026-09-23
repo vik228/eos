@@ -43,3 +43,6 @@ export EOS_ALGO_DIR="${EOS_ALGO_DIR:-$EOS_PERSONAL_ROOT/leetcode}"
 export EOS_AGENT_PROFILE_NAME="${EOS_AGENT_PROFILE_NAME:-User}"
 export EOS_LOCAL_AGENT_CONTEXT="${EOS_LOCAL_AGENT_CONTEXT:-$EOS_PROFILE_ROOT/$EOS_PROFILE/context.md}"
 export EOS_KB_REGISTRY="${EOS_KB_REGISTRY:-${EOS_GENERATED_DIR:-$HOME/.config/eos/generated}/kb/workspaces.yaml}"
+# TypeSafe keys are set in .eos.local (sourced above); export them for child processes.
+export TYPESAFE_API_KEY_WORK="${TYPESAFE_API_KEY_WORK:-}"
+export TYPESAFE_API_KEY_PERSONAL="${TYPESAFE_API_KEY_PERSONAL:-}"

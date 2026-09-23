@@ -19,6 +19,9 @@ bootstrap/bootstrap.sh
 - backend, research, and algorithm workspace directories
 - the work KB project slug
 - optional local agent context
+- optional TypeSafe Jev API keys for `--jev` retrieval
+  (`TYPESAFE_API_KEY_WORK`, `TYPESAFE_API_KEY_PERSONAL`, shared fallback
+  `TYPESAFE_API_KEY`)
 
 Example:
 
@@ -30,6 +33,8 @@ Example:
 : "${EOS_RESEARCH_DIR:=$HOME/personal/research-project}"
 : "${EOS_WORK_KNOWLEDGE_ROOT:=$HOME/work/knowledge}"
 : "${EOS_PERSONAL_KNOWLEDGE_ROOT:=$HOME/personal/knowledge}"
+: "${TYPESAFE_API_KEY_WORK:=}"
+: "${TYPESAFE_API_KEY_PERSONAL:=}"
 ```
 
 The bootstrap renders machine-specific Git and agent files under

@@ -1,0 +1,169 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<EOF
+usage: eos-jev-filter <command> [options]
+
+Jev-powered context filter for EOS knowledge retrieval.
+
+commands:
+  context       Retrieve and filter KB context with Jev
+  expand        Expand a search query with related terms
+  rerank        Re-rank search results by semantic relevance
+  route         Route a query to the most relevant KB section
+  budget        Determine adaptive context budget for a query
+  status        Check Jev API availability and configuration
+
+options:
+  --profile     work or personal (default: personal; derived from --kb when omitted)
+  --kb          KB root path (required for context and rerank)
+  --query       Search query (required)
+  --budget      Context budget (default: 2000; adaptive only when omitted)
+  --json        Compact JSON output for context
+
+environment:
+  TYPESAFE_API_KEY_WORK       TypeSafe API key for work profile
+  TYPESAFE_API_KEY_PERSONAL   TypeSafe API key for personal profile
+  TYPESAFE_API_KEY            Fallback API key for both profiles
+EOF
+  exit 2
+}
+
+command="${1:-}"
+[[ -n "$command" ]] || usage
+shift
+
+profile=""
+kb=""
+query=""
+budget=2000
+budget_set=0
+json_output=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --profile) profile="$2"; shift 2 ;;
+    --kb) kb="$2"; shift 2 ;;
+    --query) query="$2"; shift 2 ;;
+    --budget) budget="$2"; budget_set=1; shift 2 ;;
+    --json) json_output=1; shift ;;
+    *) echo "unknown option: $1" >&2; exit 2 ;;
+  esac
+done
+
+if [[ -z "$profile" ]]; then
+  if [[ -n "$kb" ]]; then
+    # Derived from the KB path in Python via derive_jev_profile when possible.
+    profile=""
+  else
+    profile="personal"
+  fi
+fi
+if [[ -n "$profile" ]]; then
+  case "$profile" in
+    work|personal) ;;
+    *) echo "--profile must be work or personal" >&2; exit 2 ;;
+  esac
+fi
+[[ "$budget" =~ ^[1-9][0-9]*$ ]] || { echo "--budget must be a positive integer" >&2; exit 2; }
+
+case "$command" in
+  status) ;;
+  expand|route|budget)
+    [[ -n "$query" ]] || { echo "--query is required" >&2; exit 2; }
+    ;;
+  rerank|context)
+    [[ -n "$query" && -n "$kb" ]] || { echo "--query and --kb are required" >&2; exit 2; }
+    ;;
+  *) usage ;;
+esac
+
+kb_src="${EOS_ROOT:-$HOME/personal/eos}/kb/src"
+
+# All user-controlled values are passed via sys.argv inside a quoted heredoc,
+# never interpolated into Python source.
+PYTHONPATH="$kb_src" exec python3 - "$command" "$query" "$profile" "$kb" "$budget" "$budget_set" "$json_output" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+command, query, profile, kb, budget_s, budget_set_s, json_s = sys.argv[1:8]
+budget = int(budget_s)
+budget_set = budget_set_s == "1"
+json_output = json_s == "1"
+
+if not profile:
+    if kb:
+        from eos_kb.jev import derive_jev_profile
+        profile = derive_jev_profile(kb)
+    else:
+        profile = "personal"
+if profile not in ("work", "personal"):
+    sys.stderr.write("--profile must be work or personal\n")
+    sys.exit(2)
+
+
+def emit(payload, *, context=False):
+    if context and not json_output:
+        print(json.dumps(payload, indent=2))
+    else:
+        print(json.dumps(payload))
+
+
+if command == "status":
+    from eos_kb.jev import is_available
+    emit({"work": is_available("work"), "personal": is_available("personal")})
+
+elif command == "expand":
+    from eos_kb.jev_retrieval import expand_query
+    expanded, tokens = expand_query(query, profile=profile)
+    emit({"original": query, "expanded": expanded, "jev_tokens": tokens})
+
+elif command == "route":
+    from eos_kb.jev_retrieval import route_query
+    section, tokens = route_query(query, profile=profile)
+    emit({"query": query, "section": section, "jev_tokens": tokens})
+
+elif command == "budget":
+    from eos_kb.jev_retrieval import adaptive_budget
+    chosen, tokens = adaptive_budget(query, profile=profile, default_budget=budget)
+    emit({"query": query, "budget": chosen, "jev_tokens": tokens})
+
+elif command == "rerank":
+    from eos_kb.jev_retrieval import rerank_results
+    from eos_kb.retrieval import search
+    cards = search(Path(kb), query, limit=20)
+    reranked, tokens = rerank_results(query, cards, profile=profile)
+    emit({
+        "results": [c.as_dict() for c in reranked],
+        "jev_tokens": tokens,
+    })
+
+elif command == "context":
+    from eos_kb.jev_retrieval import jev_context
+    result = jev_context(
+        Path(kb),
+        query,
+        budget=budget,
+        profile=profile,
+        use_adaptive_budget=not budget_set,
+    )
+    emit({
+        "query": query,
+        "budget": result.adaptive_budget if result.adaptive_budget is not None else budget,
+        "estimated_units": result.estimated_units,
+        "estimator": "utf8-bytes-div-2-ceil",
+        "warnings": list(result.warnings),
+        "cards": [c.as_dict() for c in result.cards],
+        "jev_used": result.jev_used,
+        "expanded_query": result.expanded_query,
+        "routed_section": result.routed_section,
+        "adaptive_budget": result.adaptive_budget,
+        "jev_tokens": result.jev_tokens_used,
+    }, context=True)
+
+else:
+    sys.stderr.write(f"unknown command: {command}\n")
+    sys.exit(2)
+PY

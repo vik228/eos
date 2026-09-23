@@ -28,6 +28,27 @@ contradictions block checkpoint and session end. Unknown freshness remains
 visible in audit and retrieval warnings but is advisory, because a scaffolded
 or intentionally self-contained concept may not declare a freshness contract.
 
+## Optional Jev decision layer
+
+`kb search` and `kb context` accept an opt-in `--jev` flag that asks a TypeSafe
+Jev model to expand the query, route it to a KB section (applied as a component
+filter with unfiltered fallback), and re-rank BM25 hits. `kb context --jev`
+still honors an explicit `--budget`; adaptive budgeting is never applied on
+top of a budget you typed. `--jev-profile work|personal` selects the API key;
+when omitted it is derived from the KB path against `EOS_WORK_KNOWLEDGE_ROOT`.
+
+Keys live in `.eos.local` as `TYPESAFE_API_KEY_WORK` and
+`TYPESAFE_API_KEY_PERSONAL` (shared fallback `TYPESAFE_API_KEY`). Without a
+key, or on any API failure, retrieval falls back to plain BM25. The same
+pipeline is available to hooks and scripts:
+
+```bash
+scripts/eos-jev-filter status
+scripts/eos-jev-filter context --kb "$HOME/personal/knowledge" --query "task" --budget 2000
+kb context "task or symptom" --budget 2500 --jev
+kb search "exact identifier" --jev --jev-profile work
+```
+
 ## Knowledge Changes
 
 Create a proposal rather than editing stable knowledge silently:

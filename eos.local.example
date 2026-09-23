@@ -24,3 +24,7 @@
 
 # Optional Markdown appended only to locally installed agent instructions.
 : "${EOS_LOCAL_AGENT_CONTEXT:=$EOS_PROFILE_ROOT/$EOS_PROFILE/context.md}"
+
+# Optional TypeSafe Jev keys for kb search/context --jev (empty disables Jev).
+: "${TYPESAFE_API_KEY_WORK:=}"
+: "${TYPESAFE_API_KEY_PERSONAL:=}"

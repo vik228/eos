@@ -574,6 +574,30 @@ def related(root: Path, concept: str, *, limit: int = 10) -> list[ResultCard]:
         connection.close()
 
 
+def package_context(
+    query: str,
+    budget: int,
+    warnings: tuple[str, ...],
+    cards: Iterable[ResultCard],
+) -> ContextResult:
+    """Package cards into a ContextResult, measuring the full envelope to a fixed point.
+
+    Shared by base context() and Jev-enhanced retrieval so estimator labels and
+    estimated_units stay consistent across both paths.
+    """
+    selected = tuple(cards)
+    estimated = 0
+    while True:
+        result = ContextResult(
+            query, budget, estimated, "utf8-bytes-div-2-ceil", True,
+            warnings, selected,
+        )
+        measured = estimate_units(_canonical_json(result.as_dict()))
+        if measured == estimated:
+            return result
+        estimated = measured
+
+
 def context(
     root: Path,
     query: str,
@@ -585,20 +609,7 @@ def context(
     cards = search(root, query, project=project, components=components, limit=100)
     warnings = tuple(sorted({warning for card in cards for warning in card.warnings}))
 
-    def package(selected: Iterable[ResultCard]) -> ContextResult:
-        selected_cards = tuple(selected)
-        estimated = 0
-        while True:
-            result = ContextResult(
-                query, budget, estimated, "utf8-bytes-div-2-ceil", True,
-                warnings, selected_cards,
-            )
-            measured = estimate_units(_canonical_json(result.as_dict()))
-            if measured == estimated:
-                return result
-            estimated = measured
-
-    base = package(())
+    base = package_context(query, budget, warnings, ())
     if base.estimated_units > budget:
         raise RetrievalValidationError(
             "context.budget_too_small",
@@ -608,12 +619,11 @@ def context(
         )
     selected: list[ResultCard] = []
     for card in cards:
-        candidate = [*selected, card]
-        candidate_result = package(candidate)
+        candidate_result = package_context(query, budget, warnings, [*selected, card])
         if candidate_result.estimated_units > budget:
             break
-        selected = candidate
-    return package(selected)
+        selected.append(card)
+    return package_context(query, budget, warnings, selected)
 
 
 def status(root: Path) -> dict[str, Any]:
