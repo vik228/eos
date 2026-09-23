@@ -9,6 +9,10 @@
 - Added an optional TypeSafe Jev decision layer for retrieval: opt-in `--jev`
   flags on `kb search` and `kb context`, a standalone `scripts/eos-jev-filter`,
   work/personal API key routing, and graceful BM25 fallback.
+- Added a local retrieval usage log (`usage.jsonl` in KB state) and
+  `scripts/eos-kb-usage` to summarize plain vs `--jev` calls, Jev tokens, and
+  escalations. The knowledge-management skill now treats `--jev` as an
+  escalation for weak natural-language results instead of an optional flag.
 - Added optional `related_projects` on KB workspace routes, rendered from
   `EOS_WORK_RELATED_PROJECTS`, so a workspace's default retrieval scope can
   include sibling projects. Explicit `--project` stays a strict override.

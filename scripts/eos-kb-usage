@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT/scripts/lib-eos-config.sh"
+runtime_root="${EOS_KB_HOME:-$HOME/.local/share/eos/kb}"
+python_bin="${EOS_KB_PYTHON:-$runtime_root/.venv/bin/python}"
+
+usage() {
+  cat <<EOF
+usage: eos-kb-usage [--kb PATH] [--since-days N] [--json]
+
+Summarize local kb search/context usage: plain vs --jev calls, Jev tokens,
+and escalations (a --jev call after a plain call of the same command in the
+same agent session within 10 minutes).
+
+  --kb          KB root (default: resolved from the current workspace)
+  --since-days  Only count the last N days (default: all)
+  --json        Machine-readable output
+EOF
+  exit 2
+}
+
+kb=""
+since_days=""
+json_output=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --kb) kb="${2:-}"; shift 2 ;;
+    --since-days) since_days="${2:-}"; shift 2 ;;
+    --json) json_output=1; shift ;;
+    -h|--help) usage ;;
+    *) echo "unknown option: $1" >&2; usage ;;
+  esac
+done
+[[ -z "$since_days" || "$since_days" =~ ^[1-9][0-9]*$ ]] || { echo "--since-days must be a positive integer" >&2; exit 2; }
+[[ -x "$python_bin" ]] || { echo "EOS KB runtime is not installed. Run: $ROOT/scripts/setup-kb" >&2; exit 1; }
+
+# User values pass through sys.argv, never interpolated into Python source.
+exec "$python_bin" - "$kb" "$since_days" "$json_output" <<'PY'
+import json
+import sys
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+from eos_kb.config import RegistryError, resolve_workspace
+from eos_kb.usage_log import read_usage, summarize_usage, usage_path
+
+kb_arg, since_days, json_output = sys.argv[1], sys.argv[2], sys.argv[3] == "1"
+try:
+    kb = resolve_workspace(Path.cwd(), kb=Path(kb_arg) if kb_arg else None).kb
+except RegistryError as exc:
+    sys.stderr.write(f"{exc.remediation}\n")
+    sys.exit(3)
+since = datetime.now(timezone.utc) - timedelta(days=int(since_days)) if since_days else None
+summary = summarize_usage(read_usage(kb), since=since)
+summary["kb"] = str(kb)
+summary["log"] = str(usage_path(kb))
+
+if json_output:
+    print(json.dumps(summary, ensure_ascii=False))
+    sys.exit(0)
+
+print(f"kb: {summary['kb']}")
+print(f"calls: {summary['calls']} (plain {summary['plain_calls']}, jev {summary['jev_calls']}, "
+      f"jev fallbacks {summary['jev_fallbacks']}) across {summary['sessions']} session(s)")
+print(f"jev tokens: {summary['jev_tokens']}")
+print(f"escalations: {summary['escalations']}")
+for item in summary["recent_escalations"]:
+    print(f"- {item['ts']} [{item['command']}] {item['plain_query']!r} -> {item['jev_query']!r}")
+    print(f"    plain: {', '.join(item['plain_cards'][:3]) or '(none)'}")
+    print(f"    jev:   {', '.join(item['jev_cards'][:3]) or '(none)'}")
+PY

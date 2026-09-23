@@ -57,6 +57,22 @@ still honors an explicit `--budget`; adaptive budgeting is never applied on
 top of a budget you typed. `--jev-profile work|personal` selects the API key;
 when omitted it is derived from the KB path against `EOS_WORK_KNOWLEDGE_ROOT`.
 
+Agents use Jev as an escalation, not a default: exact identifiers stay on
+plain BM25, and natural-language queries run plain first and rerun once with
+`--jev` only when the plain cards are weak (off-topic, only session logs, or
+no card answers the question).
+
+Every successful `kb search` and `kb context` appends one JSON line to
+`usage.jsonl` in the KB's local state directory (query, cards, `--jev` use,
+Jev tokens, agent session). The log never leaves the machine and never fails
+retrieval; set `EOS_KB_USAGE_LOG=0` to disable it. `scripts/eos-kb-usage`
+summarizes plain vs Jev calls, Jev tokens, and escalations (a `--jev` call
+after a plain call of the same command in the same session within 10 minutes):
+
+```bash
+scripts/eos-kb-usage --since-days 7
+```
+
 Keys live in `.eos.local` as `TYPESAFE_API_KEY_WORK` and
 `TYPESAFE_API_KEY_PERSONAL` (shared fallback `TYPESAFE_API_KEY`). Without a
 key, or on any API failure, retrieval falls back to plain BM25. The same

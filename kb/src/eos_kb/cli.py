@@ -20,6 +20,7 @@ from .migration import MigrationError, apply as apply_migration, inventory as mi
 from .retrieval import context as retrieve_context, related as retrieve_related, search as retrieve_search, show as retrieve_show, status as retrieve_status
 from .sessions import SessionError, checkpoint_session, end_session, recover_sessions, resume_session, start_session
 from .storage import StorageError, atomic_write
+from .usage_log import record_usage
 
 
 class ExitCode(IntEnum):
@@ -235,6 +236,7 @@ def _search(args: argparse.Namespace) -> CommandResult:
         project = args.project or (route.project if route.registered else None)
         # An explicit --project is a strict override; related projects extend only the workspace scope.
         related_projects = () if args.project or not route.registered else route.related_projects
+        jev_tokens = 0
         if getattr(args, "jev", False):
             from .jev import derive_jev_profile
             from .jev_retrieval import plan_query, rerank_results, route_components_for
@@ -255,13 +257,20 @@ def _search(args: argparse.Namespace) -> CommandResult:
             cards = retrieve_search(route.kb, query, project=project, related_projects=related_projects, types=args.types, components=search_components, status=args.status, freshness=args.freshness, include_draft=args.include_draft, include_deprecated=args.include_deprecated, limit=args.limit * 2)
             if route_components and not cards and args.components is None:
                 cards = retrieve_search(route.kb, query, project=project, related_projects=related_projects, types=args.types, components=None, status=args.status, freshness=args.freshness, include_draft=args.include_draft, include_deprecated=args.include_deprecated, limit=args.limit * 2)
-            cards, _ = rerank_results(args.query, cards, profile=jev_profile, top_k=args.limit * 2)
+            cards, rerank_tokens = rerank_results(args.query, cards, profile=jev_profile, top_k=args.limit * 2)
             cards = cards[: args.limit]
+            jev_tokens = (plan.tokens if plan else 0) + rerank_tokens
         else:
             cards = retrieve_search(route.kb, args.query, project=project, related_projects=related_projects, types=args.types, components=args.components, status=args.status, freshness=args.freshness, include_draft=args.include_draft, include_deprecated=args.include_deprecated, limit=args.limit)
     except (RegistryError, ValueError) as exc:
         message = exc.remediation if isinstance(exc, RegistryError) else str(exc)
         return CommandResult("search", ResultStatus.VALIDATION_FAILURE, message, ExitCode.VALIDATION, True, getattr(exc, "code", "search.validation"), getattr(exc, "field_path", "$.query"))
+    jev_requested = bool(getattr(args, "jev", False))
+    record_usage(
+        route.kb, command="search", query=args.query, project=project,
+        jev_requested=jev_requested, jev_used=jev_requested and jev_tokens > 0,
+        jev_tokens=jev_tokens, cards=[card.resource for card in cards],
+    )
     return CommandResult("search", ResultStatus.SEARCHED, f"found {len(cards)} result(s)", ExitCode.SUCCESS, data=[card.as_dict() for card in cards])
 
 
@@ -320,11 +329,22 @@ def _context(args: argparse.Namespace) -> CommandResult:
                     "tokens": result_obj.jev_tokens_used,
                 },
             }
+            record_usage(
+                route.kb, command="context", query=args.query, project=project,
+                jev_requested=True, jev_used=result_obj.jev_used,
+                jev_tokens=result_obj.jev_tokens_used,
+                cards=[card.resource for card in result_obj.cards], budget=args.budget,
+            )
             return CommandResult("context", ResultStatus.CONTEXT, f"assembled {len(result_obj.cards)} result card(s) at {result_obj.estimated_units} units (jev={result_obj.jev_used})", ExitCode.SUCCESS, data=data)
         result = retrieve_context(route.kb, args.query, budget=args.budget, project=project, related_projects=related_projects, components=args.components)
     except (RegistryError, ValueError) as exc:
         message = exc.remediation if isinstance(exc, RegistryError) else str(exc)
         return CommandResult("context", ResultStatus.VALIDATION_FAILURE, message, ExitCode.VALIDATION, True, getattr(exc, "code", "context.validation"), getattr(exc, "field_path", "$.query"))
+    record_usage(
+        route.kb, command="context", query=args.query, project=project,
+        jev_requested=False, jev_used=False, jev_tokens=0,
+        cards=[card.resource for card in result.cards], budget=args.budget,
+    )
     return CommandResult("context", ResultStatus.CONTEXT, f"assembled {len(result.cards)} result card(s) at {result.estimated_units} units", ExitCode.SUCCESS, data=result.as_dict())
 
 
