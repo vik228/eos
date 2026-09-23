@@ -22,9 +22,20 @@ sed \
   printf '[user]\n  name = %s\n  email = %s\n' "$EOS_USER_NAME" "$EOS_PERSONAL_GIT_EMAIL"
 } > "$GENERATED/git/gitconfig-personal"
 
+# Space-separated project slugs rendered as a YAML flow list.
+related_projects_yaml() {
+  local slug
+  local -a items=()
+  for slug in $1; do items+=("\"$slug\""); done
+  (( ${#items[@]} )) || return 0
+  local IFS=,
+  printf '    related_projects: [%s]\n' "${items[*]}"
+}
+
 {
   printf 'workspaces:\n'
   printf '  "%s":\n    kb: "%s"\n    project: "%s"\n' "$EOS_BACKEND_DIR" "$EOS_WORK_KNOWLEDGE_ROOT" "$EOS_WORK_PROJECT_SLUG"
+  related_projects_yaml "$EOS_WORK_RELATED_PROJECTS"
   printf '  "%s":\n    kb: "%s"\n    project: "%s"\n' "$EOS_RESEARCH_DIR" "$EOS_PERSONAL_KNOWLEDGE_ROOT" "$EOS_RESEARCH_PROJECT_SLUG"
   printf '  "%s":\n    kb: "%s"\n    project: "eos"\n' "$EOS_ROOT" "$EOS_PERSONAL_KNOWLEDGE_ROOT"
 } > "$GENERATED/kb/workspaces.yaml"

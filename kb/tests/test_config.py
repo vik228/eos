@@ -293,3 +293,61 @@ def test_registry_rejects_malformed_coverage_rules(
         load_registry(path, home=tmp_path)
 
     assert raised.value.code.startswith("registry.coverage")
+
+
+def test_registry_parses_optional_related_projects(tmp_path: Path) -> None:
+    path = tmp_path / "registry.yaml"
+    path.write_text(
+        "workspaces:\n"
+        "  /workspace:\n"
+        "    kb: /knowledge\n"
+        "    project: demo\n"
+        "    related_projects: [platform, data]\n"
+        "  /other:\n"
+        "    kb: /knowledge\n"
+        "    project: other\n",
+        encoding="utf-8",
+    )
+
+    registry = load_registry(path, home=tmp_path)
+
+    assert registry.workspaces[Path("/workspace")].related_projects == ("platform", "data")
+    assert registry.workspaces[Path("/other")].related_projects == ()
+
+
+@pytest.mark.parametrize(
+    "related",
+    (
+        "related_projects: platform",
+        "related_projects: {}",
+        "related_projects: ['']",
+        "related_projects: [1]",
+    ),
+)
+def test_registry_rejects_malformed_related_projects(tmp_path: Path, related: str) -> None:
+    path = tmp_path / "registry.yaml"
+    path.write_text(
+        "workspaces:\n"
+        "  /workspace:\n"
+        "    kb: /knowledge\n"
+        "    project: demo\n"
+        f"    {related}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RegistryError) as raised:
+        load_registry(path, home=tmp_path)
+
+    assert raised.value.code == "registry.related_projects"
+    assert raised.value.field_path == "$.workspaces./workspace.related_projects"
+
+
+def test_explicit_kb_route_keeps_related_projects(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    kb_root = tmp_path / "knowledge"
+    route = WorkspaceRoute(workspace, kb_root, "demo", related_projects=("platform",))
+    registry = WorkspaceRegistry({workspace: route})
+
+    resolved = resolve_workspace(workspace, registry=registry, kb=kb_root)
+
+    assert resolved.related_projects == ("platform",)

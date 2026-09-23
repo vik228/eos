@@ -17,6 +17,8 @@
 
 : "${EOS_BACKEND_DIR:=$EOS_WORK_ROOT/backend}"
 : "${EOS_WORK_PROJECT_SLUG:=backend}"
+# Space-separated KB project slugs also searched from the work workspace.
+: "${EOS_WORK_RELATED_PROJECTS:=}"
 : "${EOS_RESEARCH_DIR:=$EOS_PERSONAL_ROOT/research-project}"
 : "${EOS_RESEARCH_PROJECT_SLUG:=research}"
 : "${EOS_ALGO_DIR:=$EOS_PERSONAL_ROOT/leetcode}"

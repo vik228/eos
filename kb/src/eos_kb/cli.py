@@ -233,6 +233,8 @@ def _search(args: argparse.Namespace) -> CommandResult:
     try:
         route = _resolve_retrieval_route(args)
         project = args.project or (route.project if route.registered else None)
+        # An explicit --project is a strict override; related projects extend only the workspace scope.
+        related_projects = () if args.project or not route.registered else route.related_projects
         if getattr(args, "jev", False):
             from .jev import derive_jev_profile
             from .jev_retrieval import plan_query, rerank_results, route_components_for
@@ -250,13 +252,13 @@ def _search(args: argparse.Namespace) -> CommandResult:
                 route_components = route_components_for(plan.section)
             query = plan.expanded_query if plan and plan.expanded_query else args.query
             search_components = args.components if args.components is not None else route_components
-            cards = retrieve_search(route.kb, query, project=project, types=args.types, components=search_components, status=args.status, freshness=args.freshness, include_draft=args.include_draft, include_deprecated=args.include_deprecated, limit=args.limit * 2)
+            cards = retrieve_search(route.kb, query, project=project, related_projects=related_projects, types=args.types, components=search_components, status=args.status, freshness=args.freshness, include_draft=args.include_draft, include_deprecated=args.include_deprecated, limit=args.limit * 2)
             if route_components and not cards and args.components is None:
-                cards = retrieve_search(route.kb, query, project=project, types=args.types, components=None, status=args.status, freshness=args.freshness, include_draft=args.include_draft, include_deprecated=args.include_deprecated, limit=args.limit * 2)
+                cards = retrieve_search(route.kb, query, project=project, related_projects=related_projects, types=args.types, components=None, status=args.status, freshness=args.freshness, include_draft=args.include_draft, include_deprecated=args.include_deprecated, limit=args.limit * 2)
             cards, _ = rerank_results(args.query, cards, profile=jev_profile, top_k=args.limit * 2)
             cards = cards[: args.limit]
         else:
-            cards = retrieve_search(route.kb, args.query, project=project, types=args.types, components=args.components, status=args.status, freshness=args.freshness, include_draft=args.include_draft, include_deprecated=args.include_deprecated, limit=args.limit)
+            cards = retrieve_search(route.kb, args.query, project=project, related_projects=related_projects, types=args.types, components=args.components, status=args.status, freshness=args.freshness, include_draft=args.include_draft, include_deprecated=args.include_deprecated, limit=args.limit)
     except (RegistryError, ValueError) as exc:
         message = exc.remediation if isinstance(exc, RegistryError) else str(exc)
         return CommandResult("search", ResultStatus.VALIDATION_FAILURE, message, ExitCode.VALIDATION, True, getattr(exc, "code", "search.validation"), getattr(exc, "field_path", "$.query"))
@@ -285,6 +287,8 @@ def _context(args: argparse.Namespace) -> CommandResult:
     try:
         route = _resolve_retrieval_route(args)
         project = args.project or (route.project if route.registered else None)
+        # An explicit --project is a strict override; related projects extend only the workspace scope.
+        related_projects = () if args.project or not route.registered else route.related_projects
         if getattr(args, "jev", False):
             from .jev import derive_jev_profile
             from .jev_retrieval import jev_context
@@ -295,6 +299,7 @@ def _context(args: argparse.Namespace) -> CommandResult:
                 budget=args.budget,
                 profile=jev_profile,
                 project=project,
+                related_projects=related_projects,
                 components=args.components,
                 use_adaptive_budget=False,
             )
@@ -315,7 +320,7 @@ def _context(args: argparse.Namespace) -> CommandResult:
                 },
             }
             return CommandResult("context", ResultStatus.CONTEXT, f"assembled {len(result_obj.cards)} result card(s) at {result_obj.estimated_units} units (jev={result_obj.jev_used})", ExitCode.SUCCESS, data=data)
-        result = retrieve_context(route.kb, args.query, budget=args.budget, project=project, components=args.components)
+        result = retrieve_context(route.kb, args.query, budget=args.budget, project=project, related_projects=related_projects, components=args.components)
     except (RegistryError, ValueError) as exc:
         message = exc.remediation if isinstance(exc, RegistryError) else str(exc)
         return CommandResult("context", ResultStatus.VALIDATION_FAILURE, message, ExitCode.VALIDATION, True, getattr(exc, "code", "context.validation"), getattr(exc, "field_path", "$.query"))

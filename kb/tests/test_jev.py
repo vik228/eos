@@ -563,14 +563,16 @@ class TestCliJevFlags:
 
 class TestFilterScript:
     @pytest.fixture
-    def script_env(self, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
-        monkeypatch.delenv("TYPESAFE_API_KEY_PERSONAL", raising=False)
-        monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    def script_env(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, str]:
+        keys = ("TYPESAFE_API_KEY_WORK", "TYPESAFE_API_KEY_PERSONAL", "TYPESAFE_API_KEY")
+        for key in keys:
+            monkeypatch.delenv(key, raising=False)
         repo_root = Path(__file__).resolve().parents[2]
-        env = dict(os.environ)
-        env.pop("TYPESAFE_API_KEY_PERSONAL", None)
-        env.pop("TYPESAFE_API_KEY", None)
+        env = {k: v for k, v in os.environ.items() if k not in keys}
         env["EOS_ROOT"] = str(repo_root)
+        # The script loads EOS config; keep the host .eos.local and profiles out of tests.
+        env["EOS_CONFIG_FILE"] = str(tmp_path / "missing-eos.local")
+        env["EOS_PROFILE_ROOT"] = str(tmp_path / "profiles")
         return env
 
     def _run(self, script_env: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]:

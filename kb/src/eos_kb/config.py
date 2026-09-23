@@ -32,6 +32,7 @@ class WorkspaceRoute:
     project: str
     registered: bool = True
     coverage: tuple[CoverageRule, ...] = ()
+    related_projects: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -90,6 +91,19 @@ def _coverage_rules(value: object, *, filename: str, field: str) -> tuple[Covera
     return tuple(rules)
 
 
+def _related_projects(value: object, *, filename: str, field: str) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list) or not all(
+        isinstance(entry, str) and entry.strip() for entry in value
+    ):
+        raise _registry_error(
+            "registry.related_projects", filename, field,
+            "Set related_projects to a list of non-empty project names.",
+        )
+    return tuple(value)
+
+
 def _default_registry_path() -> Path:
     return kb_config_path("workspaces.yaml")
 
@@ -127,7 +141,7 @@ def load_registry(
             raise _registry_error("registry.key", registry_path.name, "$.workspaces", "Use non-empty workspace path keys.")
         if not isinstance(route_value, dict):
             raise _registry_error("registry.type", registry_path.name, field, "Set each workspace route to a mapping.")
-        unsupported_keys = sorted(set(route_value) - {"kb", "project", "coverage"})
+        unsupported_keys = sorted(set(route_value) - {"kb", "project", "coverage", "related_projects"})
         if unsupported_keys:
             key = unsupported_keys[0]
             raise _registry_error(
@@ -155,8 +169,14 @@ def load_registry(
             filename=registry_path.name,
             field=f"{field}.coverage",
         )
+        related_projects = _related_projects(
+            route_value.get("related_projects"),
+            filename=registry_path.name,
+            field=f"{field}.related_projects",
+        )
         routes[workspace] = WorkspaceRoute(
-            workspace, kb, route_value["project"], coverage=coverage
+            workspace, kb, route_value["project"], coverage=coverage,
+            related_projects=related_projects,
         )
 
     return WorkspaceRegistry(routes)
@@ -196,6 +216,7 @@ def resolve_workspace(
                 project,
                 registered=route.registered,
                 coverage=route.coverage,
+                related_projects=route.related_projects,
             )
         return route
     if project is not None and not project.strip():
@@ -221,6 +242,7 @@ def resolve_workspace(
         project or (route.project if route else "knowledge"),
         registered=route is not None,
         coverage=route.coverage if route else (),
+        related_projects=route.related_projects if route else (),
     )
 
 
