@@ -341,7 +341,9 @@ def jev_context(
     plan = plan_query(query, profile=profile) if wants_plan else None
     if plan is not None:
         total_tokens += plan.tokens
-        if use_routing and not project and not components and plan.section and plan.section != "general":
+        # Routing narrows by component within any project scope; callers disable it
+        # (use_routing=False) when the user chose an explicit scope.
+        if use_routing and not components and plan.section and plan.section != "general":
             candidate_components = route_components_for(plan.section)
             if candidate_components:
                 routed_section = plan.section

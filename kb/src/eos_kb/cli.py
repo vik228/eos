@@ -301,6 +301,7 @@ def _context(args: argparse.Namespace) -> CommandResult:
                 project=project,
                 related_projects=related_projects,
                 components=args.components,
+                use_routing=not args.project,
                 use_adaptive_budget=False,
             )
             data = {
