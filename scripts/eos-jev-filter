@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT/scripts/lib-eos-config.sh"
+
 usage() {
   cat <<EOF
 usage: eos-jev-filter <command> [options]
@@ -79,7 +82,7 @@ case "$command" in
   *) usage ;;
 esac
 
-kb_src="${EOS_ROOT:-$HOME/personal/eos}/kb/src"
+kb_src="$ROOT/kb/src"
 
 # All user-controlled values are passed via sys.argv inside a quoted heredoc,
 # never interpolated into Python source.

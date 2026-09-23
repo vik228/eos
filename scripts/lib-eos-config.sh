@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 
-if [[ -n "${EOS_CONFIG_LOADED:-}" ]]; then
+# Guard against double-sourcing within one shell only. It is deliberately not
+# exported, so child processes re-read .eos.local and see keys added after a
+# long-lived parent (tmux, agent session) started.
+if [[ -n "${_EOS_CONFIG_LOADED_PID:-}" && "$_EOS_CONFIG_LOADED_PID" == "$$" ]]; then
   return 0 2>/dev/null || exit 0
 fi
-export EOS_CONFIG_LOADED=1
+_EOS_CONFIG_LOADED_PID="$$"
 
 EOS_ROOT="${EOS_ROOT:-$HOME/personal/eos}"
 EOS_CONFIG_FILE="${EOS_CONFIG_FILE:-$EOS_ROOT/.eos.local}"

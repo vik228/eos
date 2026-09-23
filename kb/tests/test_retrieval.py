@@ -486,6 +486,46 @@ def test_cli_explicit_shared_kb_uses_project_from_current_workspace(
     assert [card["resource"] for card in genesis["data"]] == ["kb:test/genesis"]
 
 
+def test_cli_workspace_scope_derives_project_from_path_and_keeps_shared_concepts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    root = tmp_path / "knowledge"
+    _write(root, "projects/alpha/note.md", title="Alpha", resource="kb:test/alpha", body="# Note\nsharedterm")
+    _write(root, "projects/beta/note.md", title="Beta", resource="kb:test/beta", body="# Note\nsharedterm")
+    _write(root, "areas/shared.md", title="Shared", resource="kb:test/shared", body="# Note\nsharedterm")
+    _write(root, "projects/beta/tagged.md", title="Tagged", resource="kb:test/tagged", body="# Note\nsharedterm", eos={"project": "alpha"})
+    index_bundle(root)
+    registry = tmp_path / "workspaces.yaml"
+    registry.write_text(
+        f"workspaces:\n  {workspace}:\n    kb: {root}\n    project: alpha\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EOS_KB_REGISTRY", str(registry))
+    monkeypatch.chdir(workspace)
+
+    assert main(["search", "sharedterm", "--json"]) == ExitCode.SUCCESS
+    default_search = json.loads(capsys.readouterr().out)
+    assert sorted(card["resource"] for card in default_search["data"]) == [
+        "kb:test/alpha", "kb:test/shared", "kb:test/tagged",
+    ]
+
+    assert main(["search", "sharedterm", "--project", "beta", "--json"]) == ExitCode.SUCCESS
+    override_search = json.loads(capsys.readouterr().out)
+    assert sorted(card["resource"] for card in override_search["data"]) == [
+        "kb:test/beta", "kb:test/shared",
+    ]
+
+    assert main(["context", "sharedterm", "--budget", "2500", "--json"]) == ExitCode.SUCCESS
+    default_context = json.loads(capsys.readouterr().out)
+    assert sorted(card["resource"] for card in default_context["data"]["cards"]) == [
+        "kb:test/alpha", "kb:test/shared", "kb:test/tagged",
+    ]
+
+
 def test_cli_explicit_unregistered_kb_does_not_invent_project_scope(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

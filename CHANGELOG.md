@@ -9,6 +9,13 @@
 - Added an optional TypeSafe Jev decision layer for retrieval: opt-in `--jev`
   flags on `kb search` and `kb context`, a standalone `scripts/eos-jev-filter`,
   work/personal API key routing, and graceful BM25 fallback.
+- Fixed workspace-scoped `kb search` and `kb context` returning no results when
+  concepts lack an `eos.project` tag. A concept's project now falls back to its
+  `projects/<slug>/` path, and concepts outside `projects/` stay visible as
+  shared knowledge under every project scope.
+- Fixed child processes of a long-lived EOS session ignoring `.eos.local`
+  changes. The config guard is no longer exported, and `scripts/eos-jev-filter`
+  now loads EOS config so `status` reflects configured keys.
 
 ## 0.1.0 - 2026-07-01
 
