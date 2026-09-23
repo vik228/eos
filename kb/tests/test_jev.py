@@ -561,6 +561,76 @@ class TestCliJevFlags:
         assert data["jev"]["adaptive_budget"] is None
 
 
+class TestCliJevRoutingInWorkspace:
+    """Routing must work under the implicit workspace scope, for search and context alike."""
+
+    @pytest.fixture
+    def routed_workspace(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        monkeypatch.setenv("EOS_KB_STATE_ROOT", str(tmp_path / "state"))
+        monkeypatch.setenv("TYPESAFE_API_KEY_PERSONAL", "test-key")
+        root = tmp_path / "knowledge"
+        for name, components in (("api", "[backend]"), ("ui", "[frontend]")):
+            path = root / "projects" / "alpha" / f"{name}.md"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                f"---\ntype: Note\ntitle: {name}\nresource: kb:test/{name}\n"
+                f"eos:\n  components: {components}\n---\n# Note\nsharedterm\n",
+                encoding="utf-8",
+            )
+        from eos_kb.indexer import index_bundle
+        index_bundle(root)
+        registry = tmp_path / "workspaces.yaml"
+        registry.write_text(
+            f"workspaces:\n  {tmp_path}:\n    kb: {root}\n    project: alpha\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("EOS_KB_REGISTRY", str(registry))
+        monkeypatch.chdir(tmp_path)
+        return root
+
+    @staticmethod
+    def _plan_to_backend() -> dict:
+        return _mock_jev_response({
+            "kb_section": {"type": "choice", "choice": "backend", "probabilities": {"backend": 0.9}, "confidence": 0.9},
+            "complexity": {"type": "score", "score": 1.0, "legend": {}, "probabilities": {}, "confidence": 0.9},
+            **{f"cluster_{k}": {"type": "noul", "noul": 0.1} for k in ["auth", "database", "api", "infra", "frontend", "agents", "testing", "knowledge", "messaging", "security"]},
+        })
+
+    @patch("eos_kb.jev._post")
+    def test_context_routes_under_workspace_scope(
+        self, mock_post: MagicMock, routed_workspace: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        mock_post.return_value = self._plan_to_backend()
+        assert main(["context", "sharedterm", "--budget", "4000", "--jev", "--json"]) == ExitCode.SUCCESS
+        data = json.loads(capsys.readouterr().out)["data"]
+        assert data["jev"]["routed_section"] == "backend"
+        assert [card["resource"] for card in data["cards"]] == ["kb:test/api"]
+
+    @patch("eos_kb.jev._post")
+    def test_search_routes_under_workspace_scope(
+        self, mock_post: MagicMock, routed_workspace: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        mock_post.return_value = self._plan_to_backend()
+        assert main(["search", "sharedterm", "--jev", "--json"]) == ExitCode.SUCCESS
+        data = json.loads(capsys.readouterr().out)["data"]
+        assert [card["resource"] for card in data] == ["kb:test/api"]
+
+    @pytest.mark.parametrize("command", [["context", "--budget", "4000"], ["search"]])
+    @patch("eos_kb.jev._post")
+    def test_explicit_project_disables_routing(
+        self, mock_post: MagicMock, command: list[str],
+        routed_workspace: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        mock_post.return_value = self._plan_to_backend()
+        verb, *rest = command
+        assert main([verb, "sharedterm", *rest, "--project", "alpha", "--jev", "--json"]) == ExitCode.SUCCESS
+        data = json.loads(capsys.readouterr().out)["data"]
+        cards = data["cards"] if verb == "context" else data
+        assert sorted(card["resource"] for card in cards) == ["kb:test/api", "kb:test/ui"]
+        if verb == "context":
+            assert data["jev"]["routed_section"] is None
+
+
 class TestFilterScript:
     @pytest.fixture
     def script_env(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, str]:

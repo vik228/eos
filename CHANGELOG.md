@@ -12,6 +12,9 @@
 - Added optional `related_projects` on KB workspace routes, rendered from
   `EOS_WORK_RELATED_PROJECTS`, so a workspace's default retrieval scope can
   include sibling projects. Explicit `--project` stays a strict override.
+- Fixed `kb context --jev` skipping section routing inside registered
+  workspaces; routing is now disabled only by an explicit `--project`, matching
+  `kb search --jev`.
 - Fixed `eos-jev-filter` tests reading the host `.eos.local` and live API keys.
 - Fixed workspace-scoped `kb search` and `kb context` returning no results when
   concepts lack an `eos.project` tag. A concept's project now falls back to its
