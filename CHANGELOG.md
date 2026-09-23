@@ -6,6 +6,9 @@
   freshness and coverage auditing, proposal governance, recoverable sessions,
   bug investigation gates, migration tooling, agent policy adapters, wrappers,
   scheduled audits, and adherence benchmarks.
+- Added an optional TypeSafe Jev decision layer for retrieval: opt-in `--jev`
+  flags on `kb search` and `kb context`, a standalone `scripts/eos-jev-filter`,
+  work/personal API key routing, and graceful BM25 fallback.
 
 ## 0.1.0 - 2026-07-01
 
