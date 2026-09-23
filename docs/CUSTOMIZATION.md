@@ -23,6 +23,7 @@ bootstrap/bootstrap.sh
 - optional TypeSafe Jev API keys for `--jev` retrieval
   (`TYPESAFE_API_KEY_WORK`, `TYPESAFE_API_KEY_PERSONAL`, shared fallback
   `TYPESAFE_API_KEY`)
+- optional `EOS_KB_USAGE_LOG=0` to disable the local retrieval usage log
 
 Example:
 
