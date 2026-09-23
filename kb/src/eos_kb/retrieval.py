@@ -5,7 +5,7 @@ import math
 import re
 import sqlite3
 from dataclasses import dataclass, asdict
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
 from .freshness import freshness_overlays
@@ -169,6 +169,20 @@ def _json_tuple(value: str) -> tuple[str, ...]:
     return tuple(str(item) for item in parsed) if isinstance(parsed, list) else ()
 
 
+def _effective_project(row: sqlite3.Row) -> str | None:
+    """Return the concept's project: the eos.project tag, else its projects/<slug>/ path.
+
+    Concepts outside projects/ (areas, patterns, root indexes) have no project and
+    are shared knowledge visible under every project scope.
+    """
+    if row["project"]:
+        return str(row["project"])
+    parts = PurePosixPath(row["relative_file"]).parts
+    if len(parts) >= 3 and parts[0] == "projects":
+        return parts[1]
+    return None
+
+
 def _allowed(
     row: sqlite3.Row,
     *,
@@ -186,8 +200,10 @@ def _allowed(
     row_status = str(row["status"])
     requested_types = set(types or ())
     requested_components = set(components or ())
-    if project and row["project"] != project:
-        return False
+    if project:
+        row_project = _effective_project(row)
+        if row_project is not None and row_project != project:
+            return False
     if requested_types and row_type not in requested_types:
         return False
     if requested_components and not requested_components.intersection(_json_tuple(row["components"])):
