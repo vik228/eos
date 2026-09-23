@@ -17,7 +17,8 @@ bootstrap/bootstrap.sh
 - work, personal, research, and tools roots
 - work and personal knowledge-base roots
 - backend, research, and algorithm workspace directories
-- the work KB project slug
+- the work KB project slug and optional related project slugs
+  (`EOS_WORK_RELATED_PROJECTS`, space-separated) searched alongside it
 - optional local agent context
 - optional TypeSafe Jev API keys for `--jev` retrieval
   (`TYPESAFE_API_KEY_WORK`, `TYPESAFE_API_KEY_PERSONAL`, shared fallback

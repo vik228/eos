@@ -526,6 +526,53 @@ def test_cli_workspace_scope_derives_project_from_path_and_keeps_shared_concepts
     ]
 
 
+@pytest.mark.parametrize("jev", [False, True])
+def test_cli_workspace_scope_includes_related_projects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    jev: bool,
+) -> None:
+    monkeypatch.delenv("TYPESAFE_API_KEY_WORK", raising=False)
+    monkeypatch.delenv("TYPESAFE_API_KEY_PERSONAL", raising=False)
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    root = tmp_path / "knowledge"
+    _write(root, "projects/alpha/note.md", title="Alpha", resource="kb:test/alpha", body="# Note\nsharedterm")
+    _write(root, "projects/beta/note.md", title="Beta", resource="kb:test/beta", body="# Note\nsharedterm")
+    _write(root, "projects/gamma/note.md", title="Gamma", resource="kb:test/gamma", body="# Note\nsharedterm")
+    _write(root, "areas/shared.md", title="Shared", resource="kb:test/shared", body="# Note\nsharedterm")
+    index_bundle(root)
+    registry = tmp_path / "workspaces.yaml"
+    registry.write_text(
+        f"workspaces:\n  {workspace}:\n    kb: {root}\n    project: alpha\n"
+        "    related_projects: [gamma]\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EOS_KB_REGISTRY", str(registry))
+    monkeypatch.chdir(workspace)
+    jev_args = ["--jev"] if jev else []
+
+    assert main(["search", "sharedterm", "--json", *jev_args]) == ExitCode.SUCCESS
+    default_search = json.loads(capsys.readouterr().out)
+    assert sorted(card["resource"] for card in default_search["data"]) == [
+        "kb:test/alpha", "kb:test/gamma", "kb:test/shared",
+    ]
+
+    assert main(["search", "sharedterm", "--project", "beta", "--json", *jev_args]) == ExitCode.SUCCESS
+    override_search = json.loads(capsys.readouterr().out)
+    assert sorted(card["resource"] for card in override_search["data"]) == [
+        "kb:test/beta", "kb:test/shared",
+    ]
+
+    assert main(["context", "sharedterm", "--budget", "2500", "--json", *jev_args]) == ExitCode.SUCCESS
+    default_context = json.loads(capsys.readouterr().out)
+    assert sorted(card["resource"] for card in default_context["data"]["cards"]) == [
+        "kb:test/alpha", "kb:test/gamma", "kb:test/shared",
+    ]
+
+
 def test_cli_explicit_unregistered_kb_does_not_invent_project_scope(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

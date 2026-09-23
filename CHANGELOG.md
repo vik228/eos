@@ -9,6 +9,10 @@
 - Added an optional TypeSafe Jev decision layer for retrieval: opt-in `--jev`
   flags on `kb search` and `kb context`, a standalone `scripts/eos-jev-filter`,
   work/personal API key routing, and graceful BM25 fallback.
+- Added optional `related_projects` on KB workspace routes, rendered from
+  `EOS_WORK_RELATED_PROJECTS`, so a workspace's default retrieval scope can
+  include sibling projects. Explicit `--project` stays a strict override.
+- Fixed `eos-jev-filter` tests reading the host `.eos.local` and live API keys.
 - Fixed workspace-scoped `kb search` and `kb context` returning no results when
   concepts lack an `eos.project` tag. A concept's project now falls back to its
   `projects/<slug>/` path, and concepts outside `projects/` stay visible as

@@ -27,4 +27,10 @@ grep -q 'you@company.example' "$tmp/generated/git/gitconfig-work"
 grep -q 'you@example.com' "$tmp/generated/git/gitconfig-personal"
 ! rg -q 'Vikas|backend-project|research-project' "$tmp/generated"
 
+grep -q 'related_projects' "$tmp/generated/kb/workspaces.yaml" && exit 1
+
+env -i HOME="$tmp/home" PATH="$PATH" EOS_ROOT="$ROOT" EOS_CONFIG_FILE="$tmp/missing" EOS_GENERATED_DIR="$tmp/related" \
+  EOS_WORK_RELATED_PROJECTS="platform data-layer" "$ROOT/scripts/render-local-config" >/dev/null
+grep -qx '    related_projects: \["platform","data-layer"\]' "$tmp/related/kb/workspaces.yaml"
+
 echo "open source config ok"

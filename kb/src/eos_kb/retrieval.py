@@ -186,7 +186,7 @@ def _effective_project(row: sqlite3.Row) -> str | None:
 def _allowed(
     row: sqlite3.Row,
     *,
-    project: str | None,
+    projects: frozenset[str],
     types: Iterable[str] | None,
     components: Iterable[str] | None,
     status: str | None,
@@ -200,9 +200,9 @@ def _allowed(
     row_status = str(row["status"])
     requested_types = set(types or ())
     requested_components = set(components or ())
-    if project:
+    if projects:
         row_project = _effective_project(row)
-        if row_project is not None and row_project != project:
+        if row_project is not None and row_project not in projects:
             return False
     if requested_types and row_type not in requested_types:
         return False
@@ -426,10 +426,14 @@ def _resolve_rows(connection: sqlite3.Connection, concept: str) -> list[sqlite3.
     return matches
 
 
-def search(root: Path, query: str, *, project: str | None = None, types: list[str] | None = None,
+def search(root: Path, query: str, *, project: str | None = None,
+           related_projects: Iterable[str] = (), types: list[str] | None = None,
            components: list[str] | None = None, status: str | None = None,
            freshness: str | None = None, include_draft: bool = False,
            include_deprecated: bool = False, limit: int = 10) -> list[ResultCard]:
+    # A project scope admits the project itself, its related projects, and shared
+    # concepts outside projects/. Related projects apply only alongside a project.
+    projects = frozenset((project, *related_projects)) if project else frozenset()
     connection = _db(root)
     history_intent = bool(re.search(r"\b(history|deprecated|supersed(?:ed|es))\b", query, re.IGNORECASE))
     include_deprecated = include_deprecated or history_intent
@@ -448,7 +452,7 @@ def search(root: Path, query: str, *, project: str | None = None, types: list[st
             for row in all_rows
             if _allowed(
                 row,
-                project=project,
+                projects=projects,
                 types=types,
                 components=components,
                 status=status,
@@ -620,9 +624,13 @@ def context(
     *,
     budget: int,
     project: str | None = None,
+    related_projects: Iterable[str] = (),
     components: list[str] | None = None,
 ) -> ContextResult:
-    cards = search(root, query, project=project, components=components, limit=100)
+    cards = search(
+        root, query, project=project, related_projects=related_projects,
+        components=components, limit=100,
+    )
     warnings = tuple(sorted({warning for card in cards for warning in card.warnings}))
 
     base = package_context(query, budget, warnings, ())

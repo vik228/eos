@@ -28,6 +28,26 @@ contradictions block checkpoint and session end. Unknown freshness remains
 visible in audit and retrieval warnings but is advisory, because a scaffolded
 or intentionally self-contained concept may not declare a freshness contract.
 
+## Workspace retrieval scope
+
+Inside a registered workspace, `kb search` and `kb context` are scoped to the
+workspace project. A concept belongs to the project named by its
+`eos.project` tag, else to the `projects/<slug>/` directory it lives in.
+Concepts outside `projects/` (areas, patterns, logs, root indexes) are shared
+and stay visible under every scope. A registry route may list
+`related_projects` to widen the default scope to sibling projects:
+
+```yaml
+workspaces:
+  ~/work/backend:
+    kb: ~/work/knowledge
+    project: backend
+    related_projects: [platform, data-layer]
+```
+
+`render-local-config` fills this from `EOS_WORK_RELATED_PROJECTS`. An explicit
+`--project` on `kb search` is a strict override and ignores related projects.
+
 ## Optional Jev decision layer
 
 `kb search` and `kb context` accept an opt-in `--jev` flag that asks a TypeSafe

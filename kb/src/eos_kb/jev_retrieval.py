@@ -313,6 +313,7 @@ def jev_context(
     budget: int = 2000,
     profile: str = "personal",
     project: str | None = None,
+    related_projects: tuple[str, ...] = (),
     components: list[str] | None = None,
     use_expansion: bool = True,
     use_reranking: bool = True,
@@ -356,10 +357,13 @@ def jev_context(
 
     search_components = components if components is not None else route_components
     cards = base_search(
-        root, effective_query, project=project, components=search_components, limit=100
+        root, effective_query, project=project, related_projects=related_projects,
+        components=search_components, limit=100,
     )
     if route_components and not cards and components is None:
-        cards = base_search(root, effective_query, project=project, limit=100)
+        cards = base_search(
+            root, effective_query, project=project, related_projects=related_projects, limit=100
+        )
         if cards:
             routed_section = None
             route_components = None
