@@ -65,9 +65,9 @@ tmux also uses:
 | `<leader>xx` | normal | Diagnostics |
 | `<leader>cf` | normal | Format current buffer |
 | `<leader>cp` | normal | Copy current file path |
-| `<leader>ac` | normal | Open Claude in a right-side terminal |
-| `<leader>ax` | normal | Open Codex in a right-side terminal |
-| `<leader>ag` | normal | Open Antigravity in a right-side terminal |
+| `<leader>ac` | normal | Open or focus Claude in a right-side WezTerm pane |
+| `<leader>ax` | normal | Open or focus Codex in a right-side WezTerm pane |
+| `<leader>ag` | normal | Open or focus Antigravity in a right-side WezTerm pane |
 | `<leader>ae` | normal/visual | Copy an explain-this-code prompt for current line or selection |
 | `<leader>rd` | normal | Diff current file |
 | `<leader>rD` | normal | Open full workspace diff |
@@ -84,7 +84,9 @@ tmux also uses:
 EOS keeps Neovim AI-light by design. Long agent conversations run in tmux windows.
 Shortcut choices live in `configs/nvim/lua/config/eos_keymaps.lua`.
 Agent terminal profile is selected from the current directory: `~/work/**` uses work Claude/Codex homes, everything else uses personal Claude/Codex homes.
-Agent terminal splits show an `AGENT: ...` winbar and stronger split separator so they are easier to distinguish from the editor pane.
+Agents run outside Neovim's split tree while preserving the shared working directory and filesystem. Direct-WezTerm profiles such as research use sibling WezTerm panes. Editors running inside tmux, such as backend, use a pane in the current tmux window so the agent stays with the editor and does not split unrelated tmux windows. Each shortcut toggles its agent pane open or closed, and exiting Neovim closes any agent panes it created.
+
+Each declarative workspace uses an isolated tmux server named `eos-<session>`. Restarting one workspace therefore does not reuse or disturb another workspace's tmux server.
 Clean buffers auto-reload from disk when agent terminals edit files. Review agent edits with the Git hunk shortcuts above.
 
 ## Shell Aliases
@@ -141,4 +143,4 @@ Clean buffers auto-reload from disk when agent terminals edit files. Review agen
 | `<leader>mp` | Open or refresh the current Markdown file as a formatted, read-only buffer in the editor window |
 | `q` | Return from the preview to the Markdown source buffer |
 
-The preview uses `glow`, preserves the existing split layout and approximate scroll position, and refreshes after Neovim saves or external agent writes. Agent windows remain visible while the editor window switches between source, notebook, and preview buffers.
+The preview uses `glow`, preserves the existing Neovim split layout and approximate scroll position, and refreshes after Neovim saves, external agent writes, or window resizes. It renders a centered, readability-first column with the tracked theme in `configs/nvim/lua/config/markdown_preview_style.json`. Sibling WezTerm agent panes remain independent while the editor switches between source, notebook, and preview buffers.

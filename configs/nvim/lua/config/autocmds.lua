@@ -18,6 +18,28 @@ vim.api.nvim_create_autocmd("ColorScheme", {
   callback = apply_eos_window_highlights,
 })
 
+local notebook_reload_group = vim.api.nvim_create_augroup("EosNotebookReloadProtection", { clear = true })
+
+vim.api.nvim_create_autocmd({ "BufReadPost", "BufEnter" }, {
+  group = notebook_reload_group,
+  pattern = "*.ipynb",
+  callback = function(args)
+    -- Notebook saves rewrite the JSON file outside Neovim. Reloading the live
+    -- Jupytext buffer causes visible jitter and discards Molten's live output.
+    vim.bo[args.buf].autoread = false
+  end,
+})
+
+vim.api.nvim_create_autocmd("FileChangedShell", {
+  group = notebook_reload_group,
+  pattern = "*.ipynb",
+  callback = function(args)
+    -- Acknowledge the new disk timestamp without replacing the live notebook.
+    vim.v.fcs_choice = "ignore"
+    require("config.notebook_sync").external_change(args.buf)
+  end,
+})
+
 local function check_external_file_changes()
   if vim.fn.mode() == "c" then
     return

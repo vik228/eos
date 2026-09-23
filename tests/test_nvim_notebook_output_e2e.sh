@@ -131,9 +131,12 @@ end, 50) then
   return
 end
 
-vim.cmd("NotebookOpenOutput")
+vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<leader>jo", true, false, true), "xt", false)
+vim.wait(1000, function()
+  return vim.bo.filetype == "molten_output"
+end, 20)
 if vim.bo.filetype ~= "molten_output" then
-  fail("complete output window did not receive focus")
+  fail("<leader>jo did not focus the complete output window")
   return
 end
 

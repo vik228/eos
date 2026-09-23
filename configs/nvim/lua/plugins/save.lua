@@ -93,10 +93,12 @@ return {
         table.insert(cmd, tempfile)
 
         -- jupytext runs off-thread; only buffer snapshot and tiny header peek stay on main.
+        vim.b[bufnr].eos_notebook_write_in_progress = true
         vim.system(cmd, { text = true }, function(proc)
           vim.schedule(function()
             vim.fn.delete(tempdir, "rf")
             if proc.code == 0 and vim.api.nvim_buf_is_valid(bufnr) then
+              require("config.notebook_sync").record_self_write(bufnr, path)
               if vim.api.nvim_buf_get_changedtick(bufnr) == tick then
                 vim.bo[bufnr].modified = false
                 local stat = vim.uv.fs_stat(path)
@@ -105,6 +107,9 @@ return {
                 end
               end
             elseif proc.code ~= 0 then
+              if vim.api.nvim_buf_is_valid(bufnr) then
+                vim.b[bufnr].eos_notebook_write_in_progress = false
+              end
               local msg = (proc.stderr or proc.stdout or ""):gsub("%s+$", "")
               if msg ~= "" then
                 vim.notify("Notebook autosave failed: " .. msg, vim.log.levels.WARN)

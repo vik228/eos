@@ -43,9 +43,9 @@ Agent terminals write real files. Neovim auto-reloads clean buffers when Claude,
 
 | Shortcut | Action |
 | --- | --- |
-| `<leader>ac` | Open Claude agent terminal |
-| `<leader>ax` | Open Codex agent terminal |
-| `<leader>ag` | Open Antigravity agent terminal |
+| `<leader>ac` | Toggle Claude in a sibling terminal pane |
+| `<leader>ax` | Toggle Codex in a sibling terminal pane |
+| `<leader>ag` | Toggle Antigravity in a sibling terminal pane |
 | `<leader>ae` | Copy explain-this-code prompt |
 
 ## Notebook

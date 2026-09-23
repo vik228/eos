@@ -13,6 +13,10 @@ for script in "${scripts[@]}"; do
   bash -n "$path"
 done
 
+grep -q 'EOS_TMUX_SERVER="${EOS_TMUX_SERVER:-eos-$session}"' "$ROOT/scripts/eos-workspace"
+grep -q 'EOS_TMUX_BIN=/opt/homebrew/opt/tmux/bin/tmux' "$ROOT/scripts/lib-workspace.sh"
+grep -q '"$EOS_TMUX_BIN" -L "${EOS_TMUX_SERVER' "$ROOT/scripts/lib-workspace.sh"
+
 "$ROOT/scripts/eos" --help >/dev/null
 "$ROOT/scripts/backend" --dry-run >/dev/null
 "$ROOT/scripts/research" --dry-run >/dev/null

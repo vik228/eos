@@ -705,6 +705,7 @@ local function initialize_python_repl()
       if vim.bo[buf].buftype == "terminal" then
         local name = vim.api.nvim_buf_get_name(buf):lower()
         if name:find("python") or name:find("ipython") then
+          require("config.window_roles").protect_terminal(win, buf, "repl")
           vim.api.nvim_set_option_value("winbar", "%#EosNotebookReplWinBar# PYTHON REPL %*", { win = win })
           vim.api.nvim_set_option_value("winhighlight", "WinSeparator:EosStrongSplit", { win = win })
         end
@@ -934,6 +935,8 @@ local function go_to_next_cell()
   return false
 end
 
+local insert_code_cell
+
 local function advance_or_create_cell()
   if go_to_next_cell() then
     return
@@ -1142,9 +1145,23 @@ local function run_visual_selection_inline()
 end
 
 local function molten_show_output()
+  if not molten_command_available("MoltenEnterOutput") then
+    vim.notify("Notebook output is not ready. Run the cell first.", vim.log.levels.WARN)
+    return
+  end
+
+  -- MoltenEnterOutput consumes its cached selected_cell. Cursor restoration,
+  -- fast navigation, and notebook live-sync can move the cursor before its
+  -- CursorMoved autocmd refreshes that cache.
+  if vim.fn.exists("*MoltenOnCursorMoved") == 1 then
+    pcall(vim.fn.MoltenOnCursorMoved)
+  end
+  local source_win = vim.api.nvim_get_current_win()
   local ok, err = pcall(vim.cmd, "noautocmd MoltenEnterOutput")
   if not ok then
     vim.notify("Could not open full notebook output: " .. tostring(err), vim.log.levels.WARN)
+  elseif vim.api.nvim_get_current_win() == source_win then
+    vim.notify("No output for the current notebook cell. Run it first, then press <leader>jo.", vim.log.levels.INFO)
   end
 end
 
@@ -1211,7 +1228,7 @@ local function insert_cell(marker)
   vim.cmd("startinsert")
 end
 
-local function insert_code_cell()
+insert_code_cell = function()
   insert_cell("# %%")
 end
 
@@ -1252,6 +1269,10 @@ local function notebook_buffer_keymaps()
   map_notebook_key("n", notebook_keys.next_cell, go_to_next_cell, "Notebook next cell")
   map_notebook_key("n", notebook_keys.previous_cell, go_to_previous_cell, "Notebook previous cell")
   map_notebook_key("n", notebook_keys.focus_repl, molten_show_output, "Notebook show inline output")
+  map_notebook_key("i", notebook_keys.focus_repl, function()
+    vim.cmd("stopinsert")
+    molten_show_output()
+  end, "Notebook show inline output")
   map_notebook_key("n", notebook_keys.hide_repl, hide_python_repl, "Notebook hide REPL")
   map_notebook_key("n", notebook_keys.restart_repl, restart_python_repl, "Notebook restart REPL")
   map_notebook_key("n", notebook_keys.reset_session, reset_python_session, "Notebook reset Python session")
@@ -1490,6 +1511,10 @@ return {
       { "<leader>jr", run_cell_inline, desc = "Notebook run cell inline" },
       { "<leader>ja", run_all_inline, desc = "Notebook run all inline" },
       { "<leader>jo", molten_show_output, desc = "Notebook show inline output" },
+      { "<leader>jo", mode = "i", function()
+        vim.cmd("stopinsert")
+        molten_show_output()
+      end, desc = "Notebook show inline output" },
       { "<leader>jf", run_current_cell, desc = "Notebook fallback run cell in REPL" },
       { "<leader>jI", molten_interrupt_kernel, desc = "Notebook interrupt inline kernel" },
       { "<leader>je", molten_export_output, desc = "Notebook export inline output" },
