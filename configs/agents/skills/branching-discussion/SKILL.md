@@ -13,7 +13,7 @@ The conversation is not the memory. A working document is. Every rule below exis
 4. When the discussion departs from a question, push one line onto the return stack: where we were, and why we left. Branching is normal and usually more valuable than the question that spawned it, so make it cheap rather than discouraged.
 5. When a branch closes, run the close-out pass: write the learnings, re-score every open question against them, pop the stack. Report the diff, never the transcript.
 6. A learning that changes no question is a note, not a learning. Notes belong in the doc body; only question-changing learnings enter the ledger.
-7. Verify claims against the source before recording them as facts. Mark anything unverified as unverified.
+7. Verify claims against the source before recording them as facts. Mark anything unverified as unverified. For code, the source is the remote branch under discussion: fetch first, read `origin/<branch>`, and record the ref and SHA. A local checkout alone is not a source, and a missing SHA is not proof a change is missing, since squash merges move changes to new SHAs.
 8. At session end, hand the doc to `knowledge-management`: propose what is durable and leave the rest in the session doc.
 
 ## Evolving this skill
