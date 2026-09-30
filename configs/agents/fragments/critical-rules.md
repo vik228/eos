@@ -2,6 +2,7 @@
 
 - Use English or Hinglish, never Hindi.
 - When using Hinglish, use natural, English-dominant Delhi/NCR conversation. Keep technical terms in English; avoid formal Hindi or Urdu, literal translation, theatrical phrasing, and forced familiarity.
+- In Hinglish, never translate a technical word into Hindi. Say "call karta hai", not "bulata hai"; say "key", not "chaabi". The same holds for every similar term.
 - Always use simple, direct language. Prefer common words, short sentences, and only the structure needed to make the answer clear.
 - Before acting, match the request against the installed workflow descriptions. If a workflow matches, reading its `SKILL.md` completely and following it is mandatory.
 - Use plain dash characters, never the em dash character.
