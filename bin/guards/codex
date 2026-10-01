@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Guard for plain `codex`: inside the work tree it must run on the work account.
+# Work delegation uses `codex-work` (CODEX_HOME=~/.codex-work). A plain `codex`
+# launched for a work directory would silently use the personal account and its
+# quota. Set EOS_ALLOW_PERSONAL_AGENT_IN_WORK=1 for a deliberate exception.
+set -euo pipefail
+
+self="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/$(basename "${BASH_SOURCE[0]}")"
+work_root="${EOS_WORK_ROOT:-$HOME/work}"
+work_home="${EOS_CODEX_WORK_HOME:-$HOME/.codex-work}"
+
+resolve_dir() {
+  (cd "$1" 2>/dev/null && pwd -P) || printf '%s' "$1"
+}
+
+# The directory codex will work in: the --cd/-C argument when given, else $PWD.
+target="$PWD"
+args=("$@")
+for ((i = 0; i < ${#args[@]}; i++)); do
+  case "${args[$i]}" in
+    --cd|-C) target="${args[$((i + 1))]:-$target}" ;;
+    --cd=*) target="${args[$i]#--cd=}" ;;
+  esac
+done
+target="$(resolve_dir "$target")"
+work_root="$(resolve_dir "$work_root")"
+
+in_work=0
+[[ "$target" == "$work_root" || "$target" == "$work_root/"* ]] && in_work=1
+
+if [[ "$in_work" == 1 && "${EOS_ALLOW_PERSONAL_AGENT_IN_WORK:-0}" != 1 ]]; then
+  codex_home="${CODEX_HOME:-$HOME/.codex}"
+  if [[ "$(resolve_dir "$codex_home")" != "$(resolve_dir "$work_home")" ]]; then
+    echo "Refusing plain codex in $target: work directories must use codex-work (CODEX_HOME=$work_home)." >&2
+    echo "Run codex-work instead, or set EOS_ALLOW_PERSONAL_AGENT_IN_WORK=1 for a deliberate exception." >&2
+    exit 64
+  fi
+fi
+
+# Find the real codex: the first one on PATH that is not this guard.
+IFS=: read -r -a dirs <<<"$PATH"
+for dir in "${dirs[@]}"; do
+  candidate="$dir/codex"
+  [[ -x "$candidate" && ! -d "$candidate" ]] || continue
+  real="$(cd "$(dirname "$candidate")" && pwd -P)/codex"
+  [[ "$real" == "$self" ]] && continue
+  exec "$candidate" "$@"
+done
+echo "codex guard: no real codex binary found on PATH" >&2
+exit 127
