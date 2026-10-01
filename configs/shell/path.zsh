@@ -1,4 +1,5 @@
 path=(
+  "$HOME/personal/eos/bin/guards"
   "$HOME/personal/eos/scripts"
   "$HOME/personal/eos/bin"
   "$HOME/.local/bin"
