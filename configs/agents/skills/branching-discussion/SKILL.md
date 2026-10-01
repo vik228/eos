@@ -31,3 +31,4 @@ This skill is expected to improve with use. Discussion technique is learned, not
 14. Enable the other person to think in a direction instead of reaching the conclusion for them. Lay out the fork and let them choose the branch.
 15. Never form a hypothesis and validate it yourself in the same turn. If the answer looks clear, surface the choice instead of closing it.
 16. Lead toward a design conversationally. Do not present a finished design and ask for approval, because that turns a discussion into a review.
+17. Lead with a concrete case before the abstract choice. For a question about a guarantee, a boundary or a design option, first show one realistic case that works and one that fails, in simple language, then name the options. Introduce one new idea per turn; when a new flow or topic starts, explain the setup first and confirm it landed before asking for a decision.
