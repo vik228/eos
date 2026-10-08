@@ -100,7 +100,7 @@ local function open_tmux(agent, command)
   vim.system(tmux_command({
     "split-window", "-h", "-d", "-P", "-F", "#{pane_id}",
     "-t", vim.env.TMUX_PANE, "-c", vim.fn.getcwd(),
-    "zsh", "-lc", command,
+    "zsh", "-ic", command,
   }), { text = true }, function(proc)
     vim.schedule(function()
       local pane_id = vim.trim(proc.stdout or "")
@@ -160,7 +160,7 @@ function M.open(agent, command)
     "--pane-id", tostring(parent),
     "--percent", tostring(percent),
     "--cwd", vim.fn.getcwd(),
-    "--", "zsh", "-lc", shell_command,
+    "--", "zsh", "-ic", shell_command,
   })
   vim.system(wezterm_cli(args), { text = true }, function(proc)
     vim.schedule(function()

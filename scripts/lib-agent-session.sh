@@ -2,6 +2,32 @@
 
 source "${EOS_ROOT:-$HOME/personal/eos}/scripts/lib-eos-config.sh"
 
+# Resolved codex binary for the wrappers. Sets AGENT_CODEX_BIN to the EOS
+# guard (or EOS_AGENT_BIN when set). The guard itself selects the newest
+# installed CLI, so the result does not depend on login vs interactive PATH
+# order (nvim panes use `zsh -ic`, the WezTerm launcher and hooks use `zsh
+# -lc`, research tmux inherits an interactive shell). Call directly, never via
+# $(...): the PATH export must survive in the caller, and command substitution
+# would discard it.
+AGENT_CODEX_BIN=""
+agent_codex_bin() {
+  local root="${EOS_ROOT:-$HOME/personal/eos}"
+  if [[ -n "${EOS_AGENT_BIN:-}" ]]; then
+    AGENT_CODEX_BIN="$EOS_AGENT_BIN"
+    return 0
+  fi
+  local guard="$root/bin/guards/codex"
+  if [[ ! -x "$guard" ]]; then
+    AGENT_CODEX_BIN="codex"
+    return 0
+  fi
+  case ":$PATH:" in
+    *":$root/bin/guards:"*) ;;
+    *) export PATH="$root/bin/guards:$PATH" ;;
+  esac
+  AGENT_CODEX_BIN="$guard"
+}
+
 agent_session_uuid() {
   if command -v uuidgen >/dev/null 2>&1; then uuidgen | tr '[:upper:]' '[:lower:]'; return; fi
   printf '%s-%s-%s\n' "$(date +%s)" "$$" "${RANDOM:-0}"

@@ -61,7 +61,7 @@ agents_output="$("$ROOT/scripts/agents" --dry-run)"
 [[ "$agents_output" == *"antigravity-full; exec zsh"* ]]
 
 codex_personal_output="$("$ROOT/scripts/codex-personal" --dry-run)"
-[[ "$codex_personal_output" == *"CODEX_HOME=$HOME/.codex-personal codex"* ]]
+[[ "$codex_personal_output" == *"CODEX_HOME=$HOME/.codex-personal $ROOT/bin/guards/codex"* ]]
 [[ "$codex_personal_output" == *"--sandbox danger-full-access"* ]]
 [[ "$codex_personal_output" == *"sandbox_permissions=[\"disk-full-read-access\"]"* ]]
 [[ "$codex_personal_output" == *"sandbox_workspace_write.network_access=true"* ]]

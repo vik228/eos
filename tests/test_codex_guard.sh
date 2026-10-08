@@ -59,4 +59,39 @@ out="$(guard "$tmp/home/work/repo" env EOS_ROOT="$ROOT" EOS_AGENT_DOCTOR=: EOS_K
   EOS_WORK_KNOWLEDGE_ROOT="$tmp/home/work/knowledge" "$ROOT/scripts/codex-work" exec hi)"
 [[ "$out" == *"real codex CODEX_HOME=$tmp/home/.codex-work"* ]] || fail "codex-work blocked: $out"
 
+# 8. the guard selects the newest CLI even when a stale install comes first on
+# PATH (the login-shell order path_helper produces). Fully hermetic: HOME has
+# no zshrc, no host shell is consulted, and the wrapper really launches.
+mkdir -p "$tmp/home/personal/repo" "$tmp/home/personal/knowledge" "$tmp/stale" "$tmp/new"
+cat > "$tmp/stale/codex" <<'STUB'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "--version" ]]; then echo "codex-cli 0.0.1"; exit 0; fi
+printf 'stale codex\n'
+STUB
+cat > "$tmp/new/codex" <<'STUB'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "--version" ]]; then echo "codex-cli 9.9.9"; exit 0; fi
+printf 'new codex CODEX_HOME=%s args=%s\n' "${CODEX_HOME:-unset}" "$*"
+STUB
+chmod +x "$tmp/stale/codex" "$tmp/new/codex"
+new_out="$(cd "$tmp/home/personal/repo" && env -u CODEX_HOME -u EOS_ALLOW_PERSONAL_AGENT_IN_WORK -u EOS_WORK_ROOT -u EOS_CODEX_WORK_HOME HOME="$tmp/home" \
+  PATH="$tmp/stale:$ROOT/bin/guards:$tmp/new:/usr/bin:/bin" EOS_ROOT="$ROOT" \
+  EOS_AGENT_DOCTOR=: EOS_KB_BIN="$tmp/real/kb" \
+  EOS_PERSONAL_KNOWLEDGE_ROOT="$tmp/home/personal/knowledge" \
+  "$ROOT/scripts/codex-personal" exec hi)"
+[[ "$new_out" == *"new codex CODEX_HOME=$tmp/home/.codex-personal"* ]] || fail "guard did not select newest: $new_out"
+[[ "$new_out" != *"stale codex"* ]] || fail "stale binary ran: $new_out"
+
+# 9. codex-default in a work directory with the default (personal) home is
+# refused: it goes through the guard instead of running plain codex.
+mkdir -p "$tmp/home/work/repo"
+refuse_rc=0
+refuse_out="$(cd "$tmp/home/work/repo" && env -u CODEX_HOME -u EOS_ALLOW_PERSONAL_AGENT_IN_WORK -u EOS_WORK_ROOT -u EOS_CODEX_WORK_HOME HOME="$tmp/home" \
+  PATH="$ROOT/bin/guards:$tmp/real:/usr/bin:/bin" EOS_ROOT="$ROOT" \
+  EOS_AGENT_DOCTOR=: EOS_KB_BIN="$tmp/real/kb" \
+  EOS_DEFAULT_KB_ROOT="$tmp/home/personal/knowledge" \
+  "$ROOT/scripts/codex-default" exec hi 2>&1)" || refuse_rc=$?
+[[ "$refuse_rc" == 64 ]] || fail "codex-default in work exited $refuse_rc, want 64: $refuse_out"
+[[ "$refuse_out" == *"must use codex-work"* ]] || fail "missing refusal message: $refuse_out"
+
 echo "codex guard tests passed"
