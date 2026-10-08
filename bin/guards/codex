@@ -37,14 +37,66 @@ if [[ "$in_work" == 1 && "${EOS_ALLOW_PERSONAL_AGENT_IN_WORK:-0}" != 1 ]]; then
   fi
 fi
 
-# Find the real codex: the first one on PATH that is not this guard.
+# Select the newest installed CLI explicitly so the result does not depend on
+# PATH order. Login shells reorder PATH via path_helper (/etc/zprofile),
+# putting /usr/local/bin ahead of the guard and NVM; interactive shells keep
+# the guard first. Comparing versions makes every launcher agree on one binary.
+# Candidates without a parseable version stay eligible but never outrank a
+# parsed one; with no parsed version anywhere the first candidate wins.
+codex_version() {
+  local out ver
+  out="$("$1" --version 2>/dev/null | head -n 1 || true)"
+  ver="$(printf '%s\n' "$out" | grep -oE '[0-9]+(\.[0-9]+)+' | head -n 1 || true)"
+  printf '%s' "$ver"
+}
+
+version_newer() {
+  local first="$1" second="$2"
+  if [[ -n "$first" && -z "$second" ]]; then
+    return 0
+  fi
+  if [[ -z "$first" ]]; then
+    return 1
+  fi
+  local IFS=.
+  local -a first_parts=() second_parts=()
+  read -ra first_parts <<<"$first"
+  read -ra second_parts <<<"$second"
+  local i first_num second_num
+  for ((i = 0; i < ${#first_parts[@]} || i < ${#second_parts[@]}; i+=1)); do
+    first_num="${first_parts[i]:-0}"
+    second_num="${second_parts[i]:-0}"
+    if ((10#$first_num > 10#$second_num)); then
+      return 0
+    fi
+    if ((10#$first_num < 10#$second_num)); then
+      return 1
+    fi
+  done
+  return 1
+}
+
+best=""
+best_version=""
 IFS=: read -r -a dirs <<<"$PATH"
 for dir in "${dirs[@]}"; do
   candidate="$dir/codex"
   [[ -x "$candidate" && ! -d "$candidate" ]] || continue
   real="$(cd "$(dirname "$candidate")" && pwd -P)/codex"
   [[ "$real" == "$self" ]] && continue
-  exec "$candidate" "$@"
+  if [[ -z "$best" ]]; then
+    best="$candidate"
+    best_version="$(codex_version "$candidate")"
+    continue
+  fi
+  candidate_version="$(codex_version "$candidate")"
+  if version_newer "$candidate_version" "$best_version"; then
+    best="$candidate"
+    best_version="$candidate_version"
+  fi
 done
-echo "codex guard: no real codex binary found on PATH" >&2
-exit 127
+if [[ -z "$best" ]]; then
+  echo "codex guard: no real codex binary found on PATH" >&2
+  exit 127
+fi
+exec "$best" "$@"

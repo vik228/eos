@@ -10,7 +10,8 @@ if [[ -n "${CODEX_WORK_SANDBOX_CONFIG-sandbox_permissions=[\"disk-full-read-acce
 [[ "${CODEX_WORK_NETWORK_ACCESS:-1}" == 1 ]] && args+=(-c sandbox_workspace_write.network_access=true)
 [[ "${CODEX_WORK_ADD_WORK_DIR:-1}" == 1 && -d "$current_dir" ]] && args+=(--add-dir "$current_dir")
 [[ "${CODEX_WORK_ADD_KB_DIR:-1}" == 1 && -d "$kb" ]] && args+=(--add-dir "$kb")
-cmd=(env "CODEX_HOME=$CODEX_HOME" "${EOS_AGENT_BIN:-codex}" "${args[@]}" --ask-for-approval never)
+agent_codex_bin
+cmd=(env "CODEX_HOME=$CODEX_HOME" "$AGENT_CODEX_BIN" "${args[@]}" --ask-for-approval never)
 agent_session_run --agent codex --profile work --cwd "$current_dir" --kb "$kb" -- "${cmd[@]}" "$@"
 if [[ "${1:-}" == "--dry-run" ]]; then
   echo "post-session capture routed through EOS session"
