@@ -2,8 +2,9 @@
 set -euo pipefail
 ROOT="${EOS_ROOT:-$HOME/personal/eos}"
 source "$ROOT/scripts/lib-agent-session.sh"
-cwd="${EOS_AGENT_CWD:-$PWD}"
+cwd="$(cd "${EOS_AGENT_CWD:-$PWD}" 2>/dev/null && pwd -P || printf '%s' "${EOS_AGENT_CWD:-$PWD}")"
 kb="${EOS_DEFAULT_KB_ROOT:-${EOS_KB_ROOT:-$HOME/personal/knowledge}}"
+CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 agent_codex_bin
-cmd=(env "CODEX_HOME=${CODEX_HOME:-$HOME/.codex}" "$AGENT_CODEX_BIN" --cd "$cwd" --add-dir "$kb" --ask-for-approval never)
-agent_session_run --agent codex --profile default --cwd "$cwd" --kb "$kb" -- "${cmd[@]}" "$@"
+cmd=(env "CODEX_HOME=$CODEX_HOME" "$AGENT_CODEX_BIN" --cd "$cwd" --add-dir "$kb" --ask-for-approval never)
+agent_session_run --agent codex --profile default --cwd "$cwd" --kb "$kb" --capture codex -- "${cmd[@]}" "$@"

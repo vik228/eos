@@ -11,7 +11,15 @@ if [[ -z "$transcript" ]]; then
   transcript="$(printf '%s' "$input" | jq -r '.transcript_path // .agent_transcript_path // empty' 2>/dev/null || true)"
 fi
 reason="$(printf '%s' "$input" | jq -r '.reason // .trigger // empty' 2>/dev/null || true)"
-session_id="$(printf '%s' "$input" | jq -r '.session_id // "nosid"' 2>/dev/null || printf nosid)"
+session_id="$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null || true)"
+session_id="${session_id:-nosid}"
+if [[ "$session_id" == "nosid" && -n "$transcript" && -f "$transcript" ]]; then
+  session_id="$(jq -r 'select(.type == "session_meta") | .payload.session_id // .payload.id // empty' "$transcript" 2>/dev/null | head -n 1 || true)"
+  if [[ -z "$session_id" ]]; then
+    session_id="$(jq -r 'select(.sessionId != null) | .sessionId' "$transcript" 2>/dev/null | head -n 1 || true)"
+  fi
+  session_id="${session_id:-nosid}"
+fi
 
 profile="${EOS_CAPTURE_PROFILE:-${EOS_AGENT_PROFILE:-auto}}"
 agent="${EOS_CAPTURE_AGENT:-claude}"
@@ -29,7 +37,7 @@ if [[ "$profile" == auto ]]; then
   case "$session_cwd" in
     "$HOME/work"|"$HOME/work/"*) profile=work ;;
     "$HOME/personal"|"$HOME/personal/"*) profile=personal ;;
-    *) exit 0 ;;
+    *) echo "eos-kb-capture: skip: cwd outside work/personal scope ($session_cwd)" >&2; exit 0 ;;
   esac
 fi
 case "$profile" in
@@ -57,13 +65,14 @@ log_debug() {
 }
 
 if [[ -n "$workspace" ]]; then
-  case "$session_cwd" in "$workspace"|"$workspace/"*) ;; *) exit 0 ;; esac
+  case "$session_cwd" in "$workspace"|"$workspace/"*) ;; *) log_debug "skip cwd outside workspace"; exit 0 ;; esac
 fi
 if [[ "$event" == SessionEnd && -n "$reason" ]]; then
   case "$reason" in clear|logout) ;; *) log_debug "skip uninteresting reason"; exit 0 ;; esac
 fi
 if [[ -z "${DRY_RUN:-}" && "$session_id" != nosid ]]; then
-  marker="$kb/logs/.capture-seen-$event-$session_id"
+  transcript_bytes="$(wc -c <"$transcript" 2>/dev/null | tr -d ' ' || true)"
+  marker="$kb/logs/.capture-seen-$event-$session_id-${transcript_bytes:-0}"
   mkdir -p "$(dirname "$marker")"
   mkdir "$marker" 2>/dev/null || { log_debug "skip event already captured"; exit 0; }
 fi
@@ -77,7 +86,7 @@ queues=()
 while IFS= read -r queue; do queues+=("$queue"); done < <(
   find "$kb" -type f -name '_pending-kb-updates.md' 2>/dev/null | LC_ALL=C sort
 )
-queue_list="$(printf '%s\n' "${queues[@]}")"
+queue_list="$(printf '%s\n' "${queues[@]:-}")"
 if [[ -n "$project_slug" && -f "$kb/projects/$project_slug/_pending-kb-updates.md" ]]; then
   suggested_queue="$kb/projects/$project_slug/_pending-kb-updates.md"
 else

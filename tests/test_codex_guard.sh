@@ -86,7 +86,7 @@ new_out="$(cd "$tmp/home/personal/repo" && env -u CODEX_HOME -u EOS_ALLOW_PERSON
 # refused: it goes through the guard instead of running plain codex.
 mkdir -p "$tmp/home/work/repo"
 refuse_rc=0
-refuse_out="$(cd "$tmp/home/work/repo" && env -u CODEX_HOME -u EOS_ALLOW_PERSONAL_AGENT_IN_WORK -u EOS_WORK_ROOT -u EOS_CODEX_WORK_HOME HOME="$tmp/home" \
+refuse_out="$(cd "$tmp/home/work/repo" && env -u CODEX_HOME -u EOS_ALLOW_PERSONAL_AGENT_IN_WORK -u EOS_WORK_ROOT -u EOS_CODEX_WORK_HOME -u EOS_AGENT_CWD HOME="$tmp/home" \
   PATH="$ROOT/bin/guards:$tmp/real:/usr/bin:/bin" EOS_ROOT="$ROOT" \
   EOS_AGENT_DOCTOR=: EOS_KB_BIN="$tmp/real/kb" \
   EOS_DEFAULT_KB_ROOT="$tmp/home/personal/knowledge" \
