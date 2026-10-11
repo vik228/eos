@@ -96,12 +96,15 @@ The default targets are `~/.gemini/config/mcp_config.json` and `~/.gemini/antigr
 
 ## Codex KB Lifecycle
 
-Claude's work KB flow uses repo-local lifecycle hooks. Codex does not expose the same low-noise `SessionEnd` hook, so EOS uses the `codex-work` launcher for work sessions:
+Claude's work KB flow uses repo-local lifecycle hooks. Codex exposes no compact lifecycle event, so there is no PreCompact equivalent: the rollout file keeps full history anyway, and capture runs once at session end. EOS wires that into the `codex-work`, `codex-personal`, and `codex-default` launchers:
 
 - before Codex starts in `~/work/backend-project`, it prints the pending KB proposal count from `projects/backend-project/_pending-kb-updates.md`
-- after Codex exits, it finds the just-written `~/.codex-work/sessions/**.jsonl` transcript for backend-project
-- it runs `scripts/codex-work-kb-capture`, which uses headless Codex to write a dated session log and append proposed KB updates
+- after Codex exits, the wrapper finds the owning `rollout-*.jsonl` under `$CODEX_HOME/sessions`: the oldest session started at or after launch with a matching cwd, so overlapping sessions in one directory resolve to their own rollout; `codex resume` runs instead take the newest file written after launch
+- then it runs `scripts/eos-kb-capture SessionEnd` detached so the shell returns immediately; a non-zero exit still captures, and its code is preserved, while signal exits (pane close, Ctrl-C handling) skip capture
+- the headless capture agent writes a dated session log and appends proposed KB updates, exactly like Claude's SessionEnd hook
+- a per-session-content marker (`.capture-seen-<event>-<session-id>-<bytes>`) dedupes repeats on identical content, while a resumed session with new content captures again; `--dry-run` never captures (this marker format also applies to Claude captures: every compaction now captures instead of only the first)
 - curated KB docs and memory files are never edited directly by the capture step
+- `scripts/codex-work-kb-capture` remains as the manual entrypoint for the same capture (profile work, headless Codex)
 
 Use this for work Codex:
 

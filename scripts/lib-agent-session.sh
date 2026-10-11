@@ -28,13 +28,98 @@ agent_codex_bin() {
   AGENT_CODEX_BIN="$guard"
 }
 
+# Start epoch of a rollout, from its session_meta record. Prints nothing when
+# the record is missing or unparseable, so such files never win selection.
+codex_rollout_start() {
+  local iso
+  iso="$(jq -r 'select(.type == "session_meta") | .payload.timestamp // .timestamp // empty' "$1" 2>/dev/null | head -n 1 || true)"
+  [[ -n "$iso" ]] || return 0
+  python3 -c 'import sys,datetime; s=sys.argv[1].replace("Z","+00:00"); print(int(datetime.datetime.fromisoformat(s).timestamp()))' "$iso" 2>/dev/null || true
+}
+
+file_mtime() {
+  stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || true
+}
+
+# Owning Codex rollout for a cwd. Prints the transcript path, or nothing when
+# no session wrote one. A session owns rollouts that started at or after the
+# marker left before launch; among those the oldest wins, so concurrent
+# sessions in one cwd each resolve to their own rollout. A resumed session
+# keeps its old start time, so resume runs ($4 non-empty) instead take the
+# newest file written after the marker. Pure selection, no side effects.
+codex_latest_transcript() {
+  local codex_home="$1" marker="$2" cwd="$3" resume="${4:-}"
+  [[ -d "$codex_home/sessions" && -f "$marker" ]] || return 0
+  local marker_epoch f meta_cwd start mt best="" best_key=""
+  marker_epoch="$(file_mtime "$marker")"
+  [[ -n "$marker_epoch" ]] || return 0
+  while IFS= read -r f; do
+    meta_cwd="$(jq -r 'select(.type == "session_meta") | .payload.cwd // empty' "$f" 2>/dev/null | head -n 1 || true)"
+    [[ "$meta_cwd" == "$cwd" ]] || continue
+    if [[ -n "$resume" ]]; then
+      mt="$(file_mtime "$f")"
+      [[ -n "$mt" ]] || continue
+      if [[ -z "$best" || "$mt" -gt "$best_key" ]]; then best="$f"; best_key="$mt"; fi
+    else
+      start="$(codex_rollout_start "$f")"
+      [[ -n "$start" ]] || continue
+      [[ "$start" -ge "$marker_epoch" ]] || continue
+      if [[ -z "$best" || "$start" -lt "$best_key" ]]; then best="$f"; best_key="$start"; fi
+    fi
+  done < <(find "$codex_home/sessions" -type f -name 'rollout-*.jsonl' -newer "$marker" 2>/dev/null)
+  [[ -n "$best" ]] && printf '%s\n' "$best"
+  return 0
+}
+
+codex_capture_log() {
+  local kb_root="$1"
+  shift
+  [[ -n "$kb_root" ]] || return 0
+  mkdir -p "$kb_root/logs" 2>/dev/null || return 0
+  printf '%s [codex-capture] %s\n' "$(date -u +%FT%TZ)" "$*" >>"$kb_root/logs/.hook-debug.log" 2>/dev/null || true
+}
+
+# Codex equivalent of Claude's SessionEnd capture hook: after the wrapped
+# Codex exits, capture its rollout into the pending KB. There is no PreCompact
+# equivalent: Codex exposes no compact lifecycle event, and the rollout keeps
+# full history anyway, so session-end capture covers everything compact would.
+# Runs detached so the interactive shell returns immediately; the capture
+# marker inside eos-kb-capture dedupes repeats on identical content.
+# $5 is work, personal, or empty for cwd-derived (matches the Claude hooks).
+# Set EOS_CODEX_CAPTURE_LOG to a file to observe the capture output (tests).
+codex_session_capture() {
+  local codex_home="$1" marker="$2" cwd="$3" kb_root="$4" capture_profile="${5:-auto}" resume_hint="${6:-}"
+  if [[ -n "${EOS_KB_CAPTURE_RUNNING:-}" ]]; then
+    codex_capture_log "$kb_root" "skip: nested capture run"
+    return 0
+  fi
+  local transcript=""
+  transcript="$(codex_latest_transcript "$codex_home" "$marker" "$cwd" "$resume_hint" || true)"
+  if [[ -z "$transcript" ]]; then
+    codex_capture_log "$kb_root" "skip: no rollout for $cwd"
+    return 0
+  fi
+  local root="${EOS_ROOT:-$HOME/personal/eos}"
+  local capture="$root/scripts/eos-kb-capture"
+  if [[ ! -x "$capture" ]]; then
+    codex_capture_log "$kb_root" "skip: capture script missing"
+    return 0
+  fi
+  local log="${EOS_CODEX_CAPTURE_LOG:-/dev/null}"
+  EOS_CAPTURE_AGENT=codex EOS_CAPTURE_PROFILE="$capture_profile" \
+    EOS_CAPTURE_KB_ROOT="$kb_root" CODEX_CAPTURE_HOME="$codex_home" \
+    nohup "$capture" SessionEnd "$transcript" < /dev/null >>"$log" 2>&1 &
+  disown 2>/dev/null || true
+  return 0
+}
+
 agent_session_uuid() {
   if command -v uuidgen >/dev/null 2>&1; then uuidgen | tr '[:upper:]' '[:lower:]'; return; fi
   printf '%s-%s-%s\n' "$(date +%s)" "$$" "${RANDOM:-0}"
 }
 
 agent_session_run() {
-  local agent="" profile="" cwd="" kb_root="" native_id="" root="${EOS_ROOT:-$HOME/personal/eos}"
+  local agent="" profile="" cwd="" kb_root="" native_id="" capture="" root="${EOS_ROOT:-$HOME/personal/eos}"
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --agent) agent="$2"; shift 2 ;;
@@ -42,12 +127,16 @@ agent_session_run() {
       --cwd) cwd="$2"; shift 2 ;;
       --kb) kb_root="$2"; shift 2 ;;
       --native-id) native_id="$2"; shift 2 ;;
+      --capture) capture="$2"; shift 2 ;;
       --) shift; break ;;
       *) echo "unknown agent session option: $1" >&2; return 2 ;;
     esac
   done
   [[ -n "$agent" && -n "$profile" && -n "$cwd" && -n "$kb_root" && $# -gt 0 ]] || {
     echo "agent session requires agent, profile, cwd, kb, and command" >&2; return 2;
+  }
+  [[ -z "$capture" || "$capture" == "codex" ]] || {
+    echo "unknown capture agent: $capture" >&2; return 2;
   }
   local kb_bin="${EOS_KB_BIN:-$root/scripts/kb}"
   local doctor="${EOS_AGENT_DOCTOR:-$root/scripts/eos doctor}"
@@ -110,9 +199,14 @@ except Exception: print("")')"
   }
   agent_session_signal() {
     signal_status="$1"
+    [[ -n "${capture_marker:-}" ]] && rm -f "$capture_marker"
     agent_session_checkpoint
     exit "$signal_status"
   }
+  local capture_marker=""
+  if [[ -n "$capture" ]]; then
+    capture_marker="$(mktemp "${TMPDIR:-/tmp}/eos-codex-capture.XXXXXX" 2>/dev/null || true)"
+  fi
   trap 'agent_session_finish' EXIT
   trap 'agent_session_signal 130' INT
   trap 'agent_session_signal 143' TERM
@@ -121,6 +215,19 @@ except Exception: print("")')"
     EOS_AGENT_PROFILE="$profile" \
     "$@" || AGENT_SESSION_RC=$?
   agent_session_finish
+  if [[ "$capture" == "codex" && -n "$capture_marker" ]]; then
+    local capture_profile="auto" resume_hint="" arg
+    if [[ "$profile" == "work" || "$profile" == "personal" ]]; then
+      capture_profile="$profile"
+    fi
+    for arg in "${command_args[@]}"; do
+      if [[ "$arg" == "resume" ]]; then
+        resume_hint=1
+      fi
+    done
+    codex_session_capture "${CODEX_HOME:-$HOME/.codex}" "$capture_marker" "$cwd" "$kb_root" "$capture_profile" "$resume_hint"
+    rm -f "$capture_marker"
+  fi
   trap - EXIT INT TERM
   return "$AGENT_SESSION_RC"
 }
