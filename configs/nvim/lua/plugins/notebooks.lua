@@ -17,6 +17,7 @@ local notebook_keys = {
   hide_repl = { "<leader>jh" },
   restart_repl = { "<leader>jd" },
   reset_session = { "<leader>jR" },
+  colab_toggle = { "<leader>jG" },
   insert_code_cell = { "<leader>jc" },
   insert_markdown_cell = { "<leader>jm" },
   clear_cell_status = { "<leader>jx" },
@@ -941,6 +942,15 @@ local function advance_or_create_cell()
   if go_to_next_cell() then
     return
   end
+  -- No later cell: create one after the current cell's entire body, never at
+  -- the cursor. Explicit <leader>jc keeps cursor-position insertion.
+  local bufnr = vim.api.nvim_get_current_buf()
+  local marker_line = current_cell_marker_line(bufnr)
+  if marker_line then
+    local _, end_line = cell_range_from_marker(bufnr, marker_line)
+    local line_count = vim.api.nvim_buf_line_count(bufnr)
+    vim.api.nvim_win_set_cursor(0, { math.min(end_line, line_count), 0 })
+  end
   insert_code_cell()
 end
 
@@ -1031,6 +1041,296 @@ local function flush_pending_molten_evaluations(bufnr)
   end
 end
 
+local function molten_init_local()
+  local kernel_name = notebook_kernel_name()
+  vim.b.eos_molten_ready = false
+  local ok = pcall(vim.cmd, "MoltenInit " .. kernel_name)
+  if not ok then
+    ok = pcall(vim.cmd, "MoltenInit")
+  end
+
+  if ok then
+    vim.b.eos_molten_initialized = true
+    vim.b.eos_colab_mode = "local"
+    return true
+  end
+
+  vim.b.eos_molten_ready = nil
+  vim.notify("Could not initialize a Jupyter kernel for Molten.", vim.log.levels.WARN)
+  return false
+end
+
+-- Colab remote kernels -----------------------------------------------------
+-- nvim stays local; only the kernel moves to Colab. The choice sticks per
+-- buffer session: nil = undecided, "remote" or "local" once chosen, so a
+-- session never silently migrates between kernels mid-notebook.
+
+local function colab_env(name, default)
+  local value = vim.env[name]
+  if value == nil or value == "" then
+    return default
+  end
+  return value
+end
+
+local function colab_script(name)
+  local root = vim.env.EOS_ROOT
+  if root == nil or root == "" then
+    root = vim.fn.expand("~/personal/eos")
+  end
+  return root .. "/scripts/" .. name
+end
+
+local function colab_parse_kv(output)
+  local info = {}
+  for line in (output or ""):gmatch("[^\r\n]+") do
+    local key, value = line:match("^([A-Z_]+)=(.*)$")
+    if key then
+      info[key] = value
+    end
+  end
+  return info
+end
+
+local function colab_set_status(text)
+  vim.g.eos_colab_status = text
+end
+
+local function colab_mark_activity()
+  if vim.b.eos_colab_mode == "remote" then
+    vim.g.eos_colab_last_remote_run = os.time()
+  end
+end
+
+-- One connect at a time per nvim instance. Parallel cell runs while a
+-- connect is in flight queue up instead of racing colab-connect (each run
+-- would restart the server with a new token and break the others).
+local colab_connect_queue = nil
+
+local function colab_ensure_forward(create, cb)
+  cb = cb or function() end
+  if colab_connect_queue ~= nil then
+    table.insert(colab_connect_queue, { create = create, cb = cb })
+    return
+  end
+  colab_connect_queue = { { create = create, cb = cb } }
+
+  local want_create = false
+  for _, entry in ipairs(colab_connect_queue) do
+    if entry.create then
+      want_create = true
+    end
+  end
+  local args = { colab_script("colab-connect") }
+  if want_create then
+    table.insert(args, "--create")
+  end
+  colab_set_status("colab: connecting…")
+  vim.system(args, { text = true }, function(proc)
+    vim.schedule(function()
+      local info = nil
+      local err = nil
+      local level = vim.log.levels.WARN
+      if proc.code == 0 then
+        info = colab_parse_kv(proc.stdout or "")
+        if info.LOCAL_PORT == nil or info.TOKEN == nil or info.TOKEN == "" then
+          info = nil
+          err = "Colab connect gave no connection."
+        end
+      elseif proc.code == 3 or proc.code == 4 then
+        level = vim.log.levels.INFO
+        if proc.code == 3 then
+          err = "No Colab session. :ColabConnect (or <leader>jG) starts one."
+        else
+          err = "A Colab connect is already running."
+        end
+      else
+        local stderr_text = ((proc.stderr or ""):gsub("%s+$", ""))
+        err = "Colab connect failed: " .. (stderr_text ~= "" and stderr_text or "see :ColabStatus")
+      end
+      if info ~= nil then
+        vim.g.eos_colab_connected = {
+          session = info.SESSION,
+          created = info.CREATED == "1",
+          port = info.LOCAL_PORT,
+          token = info.TOKEN,
+          at = os.time(),
+        }
+        colab_set_status("colab: " .. (info.SESSION or "gpu"))
+      end
+      local queued = colab_connect_queue
+      colab_connect_queue = nil
+      for _, entry in ipairs(queued) do
+        entry.cb(info, err, level)
+      end
+    end)
+  end)
+end
+
+local function colab_init_remote_buffer(bufnr, info)
+  local url = "http://127.0.0.1:" .. info.LOCAL_PORT .. "?token=" .. info.TOKEN
+  local ok = false
+  vim.api.nvim_buf_call(bufnr, function()
+    pcall(vim.cmd, "MoltenDeinit")
+    vim.b.eos_molten_initialized = nil
+    ok = pcall(vim.cmd, { cmd = "MoltenInit", args = { url } })
+    if ok then
+      vim.b.eos_colab_mode = "remote"
+      vim.b.eos_molten_initialized = true
+    end
+  end)
+  return ok
+end
+
+local function colab_use_remote(bufnr, create, cb)
+  cb = cb or function() end
+  if not molten_command_available("MoltenInit") then
+    vim.notify("molten.nvim is not available. Run :Lazy sync after installing EOS updates.", vim.log.levels.WARN)
+    cb(false)
+    return
+  end
+
+  colab_ensure_forward(create, function(info, err, level)
+    if info == nil then
+      vim.notify(err or "Colab connect failed.", level or vim.log.levels.WARN)
+      colab_set_status("colab: local")
+      cb(false)
+      return
+    end
+    if not vim.api.nvim_buf_is_valid(bufnr) then
+      cb(false)
+      return
+    end
+    if not colab_init_remote_buffer(bufnr, info) then
+      vim.notify("Remote kernel init failed.", vim.log.levels.WARN)
+      colab_set_status("colab: local")
+      cb(false)
+      return
+    end
+    colab_mark_activity()
+    vim.notify("Notebook kernel: Colab (" .. (info.SESSION or "gpu") .. ").", vim.log.levels.INFO)
+    cb(true)
+  end)
+end
+
+local function colab_toggle()
+  local bufnr = vim.api.nvim_get_current_buf()
+  if vim.b[bufnr].eos_colab_mode == "remote" then
+    pcall(vim.cmd, "MoltenDeinit")
+    vim.b[bufnr].eos_colab_mode = "local"
+    vim.b[bufnr].eos_molten_initialized = nil
+    colab_set_status("colab: local")
+    vim.notify("Notebook kernel: local. <leader>jG goes back to Colab.", vim.log.levels.INFO)
+    return
+  end
+  vim.notify("Connecting to Colab (may create a paid runtime)...", vim.log.levels.INFO)
+  colab_use_remote(bufnr, true, function(ok)
+    if not ok then
+      molten_init_local()
+    end
+  end)
+end
+
+local function colab_stop_sync()
+  vim.fn.system({ colab_script("colab-stop") })
+end
+
+local function colab_reset_remote_buffers()
+  for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.api.nvim_buf_is_valid(bufnr) and vim.b[bufnr].eos_colab_mode == "remote" then
+      vim.api.nvim_buf_call(bufnr, function()
+        pcall(vim.cmd, "MoltenDeinit")
+      end)
+      vim.b[bufnr].eos_colab_mode = nil
+      vim.b[bufnr].eos_molten_initialized = nil
+    end
+  end
+end
+
+local function colab_stop_now(reason)
+  colab_stop_sync()
+  vim.g.eos_colab_connected = nil
+  colab_reset_remote_buffers()
+  colab_set_status("colab: off")
+  vim.notify(reason, vim.log.levels.INFO)
+end
+
+local function colab_reinit_remote_buffers(info)
+  local url = "http://127.0.0.1:" .. info.LOCAL_PORT .. "?token=" .. info.TOKEN
+  for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.api.nvim_buf_is_valid(bufnr) and vim.b[bufnr].eos_colab_mode == "remote" then
+      vim.api.nvim_buf_call(bufnr, function()
+        pcall(vim.cmd, "MoltenDeinit")
+        vim.b.eos_molten_initialized = nil
+        if pcall(vim.cmd, { cmd = "MoltenInit", args = { url } }) then
+          vim.b.eos_molten_initialized = true
+        end
+      end)
+    end
+  end
+end
+
+local function colab_mark_all_local(reason)
+  vim.g.eos_colab_connected = nil
+  colab_reset_remote_buffers()
+  colab_set_status("colab: local")
+  vim.notify(reason, vim.log.levels.WARN)
+end
+
+local function colab_probe_forward(port, token, cb)
+  vim.system({
+    "curl", "-fsS", "-o", "/dev/null", "--max-time", "5",
+    "http://127.0.0.1:" .. port .. "/api/kernels?token=" .. token,
+  }, { text = true }, function(proc)
+    vim.schedule(function()
+      cb(proc.code == 0)
+    end)
+  end)
+end
+
+local function colab_idle_check()
+  local conn = vim.g.eos_colab_connected
+  if conn == nil then
+    return
+  end
+  local idle_minutes = tonumber(colab_env("EOS_COLAB_IDLE_MINUTES", "15")) or 15
+  if idle_minutes <= 0 then
+    return
+  end
+  local last = vim.g.eos_colab_last_remote_run or conn.at or os.time()
+  if os.time() - last >= idle_minutes * 60 then
+    colab_stop_now("Colab stopped after " .. idle_minutes .. " idle minutes. :ColabConnect to resume on GPU.")
+    return
+  end
+  if conn.port == nil or conn.token == nil then
+    return
+  end
+  colab_probe_forward(conn.port, conn.token, function(alive)
+    if alive then
+      return
+    end
+    colab_ensure_forward(false, function(info)
+      if info == nil then
+        colab_mark_all_local("Colab link lost and reconnect failed. Cells run locally until :ColabConnect.")
+        return
+      end
+      colab_reinit_remote_buffers(info)
+      vim.g.eos_colab_last_remote_run = os.time()
+      vim.notify("Colab link healed. Re-run cells on the fresh kernel.", vim.log.levels.INFO)
+    end)
+  end)
+end
+
+local function colab_ensure_idle_timer()
+  if vim.g.eos_colab_idle_timer == nil then
+    vim.g.eos_colab_idle_timer = vim.fn.timer_start(60000, colab_idle_check, { ["repeat"] = -1 })
+  end
+end
+
+if vim.g.eos_colab_status == nil then
+  colab_set_status("colab: off")
+end
+
 local function molten_init_kernel()
   if not molten_command_available("MoltenInit") then
     vim.notify("molten.nvim is not available. Run :Lazy sync after installing EOS updates.", vim.log.levels.WARN)
@@ -1041,21 +1341,27 @@ local function molten_init_kernel()
     return true
   end
 
-  local kernel_name = notebook_kernel_name()
-  vim.b.eos_molten_ready = false
-  local ok = pcall(vim.cmd, "MoltenInit " .. kernel_name)
-  if not ok then
-    ok = pcall(vim.cmd, "MoltenInit")
-  end
-
-  if ok then
-    vim.b.eos_molten_initialized = true
+  if vim.b.eos_colab_mode == "remote" then
+    local bufnr = vim.api.nvim_get_current_buf()
+    colab_use_remote(bufnr, false, function(ok)
+      if not ok then
+        molten_init_local()
+      end
+    end)
     return true
   end
 
-  vim.b.eos_molten_ready = nil
-  vim.notify("Could not initialize a Jupyter kernel for Molten.", vim.log.levels.WARN)
-  return false
+  if vim.b.eos_colab_mode == "local" or colab_env("EOS_COLAB_AUTO", "1") ~= "1" then
+    return molten_init_local()
+  end
+
+  local bufnr = vim.api.nvim_get_current_buf()
+  colab_use_remote(bufnr, false, function(ok)
+    if not ok then
+      molten_init_local()
+    end
+  end)
+  return true
 end
 
 local function evaluate_range_inline(start_line, end_line)
@@ -1063,6 +1369,7 @@ local function evaluate_range_inline(start_line, end_line)
     return false
   end
 
+  colab_mark_activity()
   local bufnr = vim.api.nvim_get_current_buf()
   if not vim.b[bufnr].eos_molten_initialized then
     pending_molten_evaluations[bufnr] = pending_molten_evaluations[bufnr] or {}
@@ -1264,6 +1571,7 @@ local function notebook_buffer_keymaps()
   map_notebook_key("n", notebook_keys.fallback_run_cell, run_current_cell, "Notebook fallback run cell in REPL")
   map_notebook_key("v", notebook_keys.fallback_run_cell, run_visual_selection, "Notebook fallback run selection in REPL")
   map_notebook_key("n", notebook_keys.interrupt_kernel, molten_interrupt_kernel, "Notebook interrupt inline kernel")
+  map_notebook_key("n", notebook_keys.colab_toggle, colab_toggle, "Notebook toggle Colab GPU kernel")
   map_notebook_key("n", notebook_keys.export_output, molten_export_output, "Notebook export inline output")
   map_notebook_key("n", notebook_keys.import_output, molten_import_output, "Notebook import inline output")
   map_notebook_key("n", notebook_keys.next_cell, go_to_next_cell, "Notebook next cell")
@@ -1297,6 +1605,7 @@ local function setup_notebook_buffer()
   vim.opt_local.cursorline = true
   notebook_buffer_keymaps()
   render_cell_markers(bufnr)
+  colab_ensure_idle_timer()
 
   local group = vim.api.nvim_create_augroup("EosNotebookBuffer" .. bufnr, { clear = true })
   vim.api.nvim_create_autocmd({ "BufEnter", "CursorMoved", "CursorMovedI", "TextChanged", "TextChangedI" }, {
@@ -1465,6 +1774,35 @@ return {
       vim.api.nvim_create_user_command("NotebookImportOutput", molten_import_output, {})
       vim.api.nvim_create_user_command("NotebookOpenOutput", molten_show_output, {})
       vim.api.nvim_create_user_command("NotebookResetSession", reset_python_session, {})
+      vim.api.nvim_create_user_command("ColabConnect", function()
+        local bufnr = vim.api.nvim_get_current_buf()
+        vim.notify("Connecting to Colab (may create a paid runtime)...", vim.log.levels.INFO)
+        colab_use_remote(bufnr, true, function(ok)
+          if not ok then
+            molten_init_local()
+          end
+        end)
+      end, {})
+      vim.api.nvim_create_user_command("ColabStop", function()
+        colab_stop_now("Colab stopped. Notebook cells will run locally until :ColabConnect.")
+      end, {})
+      vim.api.nvim_create_user_command("ColabStatus", function()
+        local status = vim.g.eos_colab_status or "colab: off"
+        vim.system({ colab_script("colab-status") }, { text = true }, function(proc)
+          vim.schedule(function()
+            vim.notify(status .. "\n" .. (proc.stdout or ""), vim.log.levels.INFO)
+          end)
+        end)
+      end, {})
+      local colab_group = vim.api.nvim_create_augroup("EosColab", { clear = true })
+      vim.api.nvim_create_autocmd("VimLeavePre", {
+        group = colab_group,
+        callback = function()
+          if vim.g.eos_colab_connected ~= nil then
+            colab_stop_sync()
+          end
+        end,
+      })
       vim.api.nvim_create_user_command("NotebookRenderCells", function()
         render_cell_markers(0)
       end, {})
@@ -1522,6 +1860,7 @@ return {
       { "<leader>jh", hide_python_repl, desc = "Notebook hide REPL" },
       { "<leader>jd", restart_python_repl, desc = "Notebook restart REPL" },
       { "<leader>jR", reset_python_session, desc = "Notebook reset Python session" },
+      { "<leader>jG", colab_toggle, desc = "Notebook toggle Colab GPU kernel" },
       { "<leader>jc", insert_code_cell, desc = "Notebook insert code cell" },
       { "<leader>jm", insert_markdown_cell, desc = "Notebook insert markdown cell" },
       { "<leader>jx", clear_cell_status, desc = "Notebook clear cell status" },

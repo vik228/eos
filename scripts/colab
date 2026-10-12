@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# arch-aware delegation to the real google-colab-cli. The stock entry point
+# breaks under a Rosetta (x86_64) python because its cryptography wheel is
+# arm64; forcing the arm64 slice on Apple Silicon fixes the import.
+set -euo pipefail
+
+real_colab() {
+  local dir candidate self
+  self="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/colab"
+  IFS=: read -r -a dirs <<<"$PATH"
+  for dir in "${dirs[@]}"; do
+    candidate="$dir/colab"
+    [[ -x "$candidate" && ! -d "$candidate" ]] || continue
+    [[ "$(cd "$(dirname "$candidate")" && pwd -P)/colab" == "$self" ]] && continue
+    printf '%s\n' "$candidate"
+    return 0
+  done
+  return 1
+}
+
+if [[ -n "${EOS_COLAB_BIN:-}" ]]; then
+  exec "$EOS_COLAB_BIN" "$@"
+fi
+
+if bin="$(real_colab)"; then
+  if [[ "$(uname -s)" == Darwin && "$(uname -m)" == arm64 ]]; then
+    exec /usr/bin/arch -arm64 "$bin" "$@"
+  fi
+  exec "$bin" "$@"
+fi
+
+if python3 -c "import colab_cli.cli" 2>/dev/null; then
+  if [[ "$(uname -s)" == Darwin && "$(uname -m)" == arm64 ]]; then
+    exec /usr/bin/arch -arm64 python3 -m colab_cli.cli "$@"
+  fi
+  exec python3 -m colab_cli.cli "$@"
+fi
+
+echo "google-colab-cli is not installed. Run scripts/setup-colab." >&2
+exit 127

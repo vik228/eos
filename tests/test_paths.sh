@@ -56,6 +56,11 @@ required_files=(
   scripts/eos-kb-capture
   scripts/eos-kb-pending-reminder
   scripts/setup-notebooks
+  scripts/setup-colab
+  scripts/colab
+  scripts/colab-connect
+  scripts/colab-status
+  scripts/colab-stop
   bin/claude
   knowledge/00-index.md
   knowledge/_pending-kb-updates.md
