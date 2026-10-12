@@ -11,6 +11,7 @@
 set -euo pipefail
 
 ROOT="${EOS_ROOT:-$HOME/personal/eos}"
+source "$ROOT/scripts/lib-eos-config.sh"
 SESSION="${EOS_COLAB_SESSION:-eos}"
 GPU="${EOS_COLAB_GPU:-T4}"
 HIGH_MEM="${EOS_COLAB_HIGH_MEM:-0}"
@@ -59,7 +60,7 @@ session_active() {
   out="$("$COLAB_BIN" sessions 2>/dev/null || true)"
   [[ -n "$out" ]] || return 1
   printf '%s\n' "$out" | awk -v name="$SESSION" '
-    { for (i = 1; i <= NF; i++) if ($i == name) { found = 1 } }
+    { for (i = 1; i <= NF; i++) if ($i == name || $i == "[" name "]") { found = 1 } }
     END { exit(!found) }'
 }
 
@@ -131,18 +132,33 @@ fi
 CREATED=0
 if ! session_active; then
   [[ "$CREATE" == 1 ]] || { echo "colab-connect: no active session '$SESSION' (use --create to make one)" >&2; exit 3; }
+  echo "colab: creating session '$SESSION'${GPU:+ ($GPU)} (this takes minutes)..." >&2
   create_args=(new -s "$SESSION")
   [[ -n "$GPU" ]] && create_args+=(--gpu "$GPU")
   [[ "$HIGH_MEM" == 1 ]] && create_args+=(--high-mem)
   "$COLAB_BIN" "${create_args[@]}" >/dev/null || die "could not create session '$SESSION'"
   CREATED=1
+else
+  echo "colab: session '$SESSION' active" >&2
 fi
 [[ "$PREV_CREATED" == 1 ]] && CREATED=1
 
 TOKEN="$(openssl rand -hex 16)"
 
+# A half-dead forward still holds Colab's single bridge slot and would get
+# every ssh below rejected: drop it before touching the runtime.
+if [[ -f "$STATE" ]]; then
+  # shellcheck source=/dev/null
+  source "$STATE"
+  kill_forward "${STATE_PID:-}" "-L $LOCAL_PORT:127.0.0.1:$REMOTE_PORT"
+fi
+while IFS= read -r pid; do
+  kill_forward "$pid" "-L $LOCAL_PORT:127.0.0.1:$REMOTE_PORT"
+done < <(pgrep -f -- "-L $LOCAL_PORT:127.0.0.1:$REMOTE_PORT" || true)
+
 # Restart the remote server so the token is always fresh and known. The
 # bracket pattern keeps pkill from matching its own shell on Linux procps.
+echo "colab: starting remote jupyter (about 30 seconds)..." >&2
 ssh_run 'pkill -f "[j]upyter.*--port='"$REMOTE_PORT"'" 2>/dev/null; true'
 ssh_run "nohup jupyter notebook --no-browser --allow-root --port=$REMOTE_PORT --ip=127.0.0.1 --NotebookApp.token=$TOKEN >/tmp/eos-jnb.log 2>&1 & sleep 2" >/dev/null
 
@@ -156,6 +172,7 @@ for _ in $(seq 1 10); do
 done
 [[ "$ready" == 1 ]] || die "remote jupyter did not start (see /tmp/eos-jnb.log on the runtime)"
 
+echo "colab: opening tunnel..." >&2
 "$SSH" -o "$PROXY" \
   -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
   -o IdentitiesOnly=yes -i "$IDENTITY" \
@@ -165,6 +182,7 @@ done
 FWD_PID="$(pgrep -f -- "-L $LOCAL_PORT:127.0.0.1:$REMOTE_PORT" | head -n 1 || true)"
 [[ -n "$FWD_PID" ]] || die "forward started but pid not found"
 
+echo "colab: verifying link..." >&2
 ready=0
 for _ in $(seq 1 6); do
   if api_ok "http://127.0.0.1:$LOCAL_PORT/api/kernels?token=$TOKEN"; then

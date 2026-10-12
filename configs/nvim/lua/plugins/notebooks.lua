@@ -1092,8 +1092,38 @@ local function colab_parse_kv(output)
   return info
 end
 
+local function colab_winbar_for(bufnr)
+  local mode = vim.b[bufnr].eos_colab_mode
+  if mode == "remote" then
+    local conn = vim.g.eos_colab_connected
+    local session = (conn and conn.session) or "gpu"
+    return "kernel: colab (" .. session .. ")"
+  end
+  if mode == "local" then
+    return "kernel: local"
+  end
+  local link = vim.g.eos_colab_status or "colab: off"
+  if link == "colab: off" or link == "colab: local" then
+    return "kernel: local"
+  end
+  if link == "colab: connecting…" then
+    return "kernel: connecting…"
+  end
+  return "kernel: " .. link:sub(8)
+end
+
+local function colab_refresh_winbar()
+  for _, win in ipairs(vim.api.nvim_list_wins()) do
+    local bufnr = vim.api.nvim_win_get_buf(win)
+    if vim.api.nvim_buf_is_valid(bufnr) and vim.b[bufnr].eos_notebook_buffer then
+      vim.api.nvim_set_option_value("winbar", "%#EosNotebookCellHeader# " .. colab_winbar_for(bufnr) .. " %*", { win = win })
+    end
+  end
+end
+
 local function colab_set_status(text)
   vim.g.eos_colab_status = text
+  colab_refresh_winbar()
 end
 
 local function colab_mark_activity()
@@ -1126,45 +1156,86 @@ local function colab_ensure_forward(create, cb)
     table.insert(args, "--create")
   end
   colab_set_status("colab: connecting…")
-  vim.system(args, { text = true }, function(proc)
-    vim.schedule(function()
-      local info = nil
-      local err = nil
-      local level = vim.log.levels.WARN
-      if proc.code == 0 then
-        info = colab_parse_kv(proc.stdout or "")
-        if info.LOCAL_PORT == nil or info.TOKEN == nil or info.TOKEN == "" then
-          info = nil
-          err = "Colab connect gave no connection."
+  local out_lines = {}
+  local jobid = vim.fn.jobstart(args, {
+    on_stdout = function(_, data)
+      for _, line in ipairs(data) do
+        table.insert(out_lines, line)
+      end
+    end,
+    on_stderr = function(_, data)
+      for _, line in ipairs(data) do
+        if line ~= "" then
+          vim.schedule(function()
+            vim.notify(line, vim.log.levels.INFO)
+          end)
         end
-      elseif proc.code == 3 or proc.code == 4 then
-        level = vim.log.levels.INFO
-        if proc.code == 3 then
-          err = "No Colab session. :ColabConnect (or <leader>jG) starts one."
+      end
+    end,
+    on_exit = function(_, code)
+      vim.g.eos_colab_job = nil
+      vim.schedule(function()
+        local info = nil
+        local err = nil
+        local level = vim.log.levels.WARN
+        if code == 0 then
+          info = colab_parse_kv(table.concat(out_lines, "\n"))
+          if info.LOCAL_PORT == nil or info.TOKEN == nil or info.TOKEN == "" then
+            info = nil
+            err = "Colab connect gave no connection."
+          end
+        elseif code == 3 or code == 4 then
+          level = vim.log.levels.INFO
+          if code == 3 then
+            err = "No Colab session. :ColabConnect (or <leader>jG) starts one."
+          else
+            err = "A Colab connect is already running."
+          end
         else
-          err = "A Colab connect is already running."
+          err = "Colab connect failed (exit " .. code .. "). See :ColabStatus."
         end
-      else
-        local stderr_text = ((proc.stderr or ""):gsub("%s+$", ""))
-        err = "Colab connect failed: " .. (stderr_text ~= "" and stderr_text or "see :ColabStatus")
-      end
-      if info ~= nil then
-        vim.g.eos_colab_connected = {
-          session = info.SESSION,
-          created = info.CREATED == "1",
-          port = info.LOCAL_PORT,
-          token = info.TOKEN,
-          at = os.time(),
-        }
-        colab_set_status("colab: " .. (info.SESSION or "gpu"))
-      end
-      local queued = colab_connect_queue
-      colab_connect_queue = nil
-      for _, entry in ipairs(queued) do
-        entry.cb(info, err, level)
-      end
-    end)
-  end)
+        if info ~= nil then
+          vim.g.eos_colab_connected = {
+            session = info.SESSION,
+            created = info.CREATED == "1",
+            port = info.LOCAL_PORT,
+            token = info.TOKEN,
+            at = os.time(),
+          }
+          colab_set_status("colab: " .. (info.SESSION or "gpu"))
+        end
+        local queued = colab_connect_queue
+        colab_connect_queue = nil
+        for _, entry in ipairs(queued) do
+          entry.cb(info, err, level)
+        end
+      end)
+    end,
+  })
+  if jobid <= 0 then
+    vim.g.eos_colab_job = nil
+    local queued = colab_connect_queue
+    colab_connect_queue = nil
+    for _, entry in ipairs(queued) do
+      entry.cb(nil, "Colab connect could not start.", vim.log.levels.WARN)
+    end
+    return
+  end
+  vim.g.eos_colab_job = jobid
+end
+
+local function colab_cancel_connect(reason)
+  if vim.g.eos_colab_job ~= nil then
+    vim.fn.jobstop(vim.g.eos_colab_job)
+    vim.g.eos_colab_job = nil
+  end
+  if colab_connect_queue ~= nil then
+    local queued = colab_connect_queue
+    colab_connect_queue = nil
+    for _, entry in ipairs(queued) do
+      entry.cb(nil, reason or "Colab connect cancelled.", vim.log.levels.INFO)
+    end
+  end
 end
 
 local function colab_init_remote_buffer(bufnr, info)
@@ -1248,6 +1319,7 @@ local function colab_reset_remote_buffers()
 end
 
 local function colab_stop_now(reason)
+  colab_cancel_connect("Colab connect cancelled.")
   colab_stop_sync()
   vim.g.eos_colab_connected = nil
   colab_reset_remote_buffers()
@@ -1606,6 +1678,7 @@ local function setup_notebook_buffer()
   notebook_buffer_keymaps()
   render_cell_markers(bufnr)
   colab_ensure_idle_timer()
+  colab_refresh_winbar()
 
   local group = vim.api.nvim_create_augroup("EosNotebookBuffer" .. bufnr, { clear = true })
   vim.api.nvim_create_autocmd({ "BufEnter", "CursorMoved", "CursorMovedI", "TextChanged", "TextChangedI" }, {
@@ -1623,13 +1696,24 @@ return {
     version = "0.2.0",
     lazy = false,
     build = patch_jupytext_notebook_lifecycle,
-    opts = {
-      jupytext = vim.fn.executable(notebook_jupytext) == 1 and notebook_jupytext or "jupytext",
-      format = "py:percent",
-      update = true,
-      filetype = "python",
-      autosync = true,
-    },
+    opts = function()
+      local root = vim.env.EOS_ROOT
+      if root == nil or root == "" then
+        root = vim.fn.expand("~/personal/eos")
+      end
+      local options = {
+        jupytext = vim.fn.executable(notebook_jupytext) == 1 and notebook_jupytext or "jupytext",
+        format = "py:percent",
+        update = true,
+        filetype = "python",
+        autosync = true,
+      }
+      local template = root .. "/configs/nvim/data/notebook-template.ipynb"
+      if vim.fn.filereadable(template) == 1 then
+        options.new_template = template
+      end
+      return options
+    end,
     config = function(plugin, opts)
       patch_jupytext_notebook_lifecycle(plugin)
       require("jupytext").setup(opts)
@@ -1786,6 +1870,39 @@ return {
       vim.api.nvim_create_user_command("ColabStop", function()
         colab_stop_now("Colab stopped. Notebook cells will run locally until :ColabConnect.")
       end, {})
+      -- Data convention: the first code cell containing a `# eos-data`
+      -- comment line declares the notebook's datasets. :ColabData runs it
+      -- on the current kernel (local or Colab), so data lands where compute
+      -- runs without any file sync.
+      local function colab_run_data_cell()
+        local bufnr = vim.api.nvim_get_current_buf()
+        local current_marker = nil
+        local current_kind = nil
+        for index, text in ipairs(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)) do
+          if is_cell_marker(text) then
+            current_marker = index
+            current_kind = cell_kind(text)
+            if text:find("[raw]", 1, true) then
+              current_kind = "Raw"
+            end
+          elseif
+            (text:match("^#%s*eos%-data$") or text:match("^#%s*eos%-data[^%w-]"))
+            and current_marker
+            and current_kind == "Code"
+          then
+            local start_line, end_line = cell_range_from_marker(bufnr, current_marker)
+            if evaluate_range_inline(start_line, end_line) then
+              mark_cell_inline(bufnr, current_marker)
+              vim.notify("Data cell running.", vim.log.levels.INFO)
+            else
+              vim.notify("Data cell could not run.", vim.log.levels.WARN)
+            end
+            return
+          end
+        end
+        vim.notify("No # eos-data cell in this notebook.", vim.log.levels.WARN)
+      end
+      vim.api.nvim_create_user_command("ColabData", colab_run_data_cell, {})
       vim.api.nvim_create_user_command("ColabStatus", function()
         local status = vim.g.eos_colab_status or "colab: off"
         vim.system({ colab_script("colab-status") }, { text = true }, function(proc)

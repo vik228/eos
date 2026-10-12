@@ -42,12 +42,17 @@ esac
 STUB
 chmod +x "$stubbin/colab"
 
-# Stub ssh: remote curl checks succeed, -N -f forward is a no-op success.
+# Stub ssh: remote curl checks succeed; -N -f -L spawns a fake forward process
+# carrying the spec in argv[0], like the real backgrounded ssh does.
 cat >"$stubbin/ssh" <<'STUB'
 #!/usr/bin/env bash
 for arg in "$@"; do
   [[ "$arg" == *"curl"* ]] && exit 0
 done
+if [[ " $* " == *" -N "* && " $* " == *" -L "* ]]; then
+  bash -c "exec -a \"FAKE-COLAB-FWD ssh ${STUB_FWD_SPEC:?}\" sleep 120" >/dev/null 2>&1 &
+  disown 2>/dev/null || true
+fi
 exit 0
 STUB
 chmod +x "$stubbin/ssh"
@@ -138,8 +143,7 @@ rm -f "$tmp/stub-token"
 # 4. connect --create makes a session, starts server, forwards, verifies.
 rm -f "$STUB_STATE/session-active" "$STUB_STATE/calls"
 start_stub_server
-bash -c 'exec -a "FAKE-COLAB-FWD ssh -L '"$PORT"':127.0.0.1:18888" sleep 60' &
-sleep_pid=$!
+export STUB_FWD_SPEC="-L $PORT:127.0.0.1:18888"
 out="$(EOS_ROOT="$ROOT" "$ROOT/scripts/colab-connect" --create 2>&1)"
 grep -q "created.*-s eos" "$STUB_STATE/calls" || fail "session not created: $(cat "$STUB_STATE/calls" 2>/dev/null)"
 grep -q "\-\-gpu T4" "$STUB_STATE/calls" || fail "gpu flag not passed: $(cat "$STUB_STATE/calls" 2>/dev/null)"
@@ -154,48 +158,46 @@ token="$(printf '%s\n' "$out" | sed -n 's/^TOKEN=//p')"
 source "$EOS_STATE_DIR/colab/forward.env"
 [[ "$STATE_SESSION" == "eos" && "$STATE_LOCAL_PORT" == "$PORT" && -n "$STATE_TOKEN" && -n "$STATE_PID" ]] \
   || fail "state file wrong: $(cat "$EOS_STATE_DIR/colab/forward.env")"
-kill "$http_pid" "$sleep_pid" 2>/dev/null || true
+kill -0 "$STATE_PID" 2>/dev/null || fail "recorded forward pid is not alive"
 
 # 5. second connect reuses the live forward (same token, CREATED preserved).
 printf '%s' "$token" >"$tmp/stub-token"
-start_stub_server
-bash -c 'exec -a "FAKE-COLAB-FWD ssh -L '"$PORT"':127.0.0.1:18888" sleep 60' &
-sleep_pid=$!
-# point the recorded pid at the live fake forward
-sed -i.bak "s/^STATE_PID=.*/STATE_PID=$sleep_pid/" "$EOS_STATE_DIR/colab/forward.env"
 out2="$(EOS_ROOT="$ROOT" "$ROOT/scripts/colab-connect" 2>&1)"
 token2="$(printf '%s\n' "$out2" | sed -n 's/^TOKEN=//p')"
 [[ "$token2" == "$token" ]] || fail "reuse changed token: $token2 vs $token"
 [[ "$out2" == *"CREATED=1"* ]] || fail "reuse must preserve CREATED=1: $out2"
-kill "$http_pid" "$sleep_pid" 2>/dev/null || true
 
 # 6. token verification: a tampered token fails the checks.
-start_stub_server
-bash -c 'exec -a "FAKE-COLAB-FWD ssh -L '"$PORT"':127.0.0.1:18888" sleep 60' &
-sleep_pid=$!
-sed -i.bak "s/^STATE_PID=.*/STATE_PID=$sleep_pid/" "$EOS_STATE_DIR/colab/forward.env"
 sed -i.bak "s/^STATE_TOKEN=.*/STATE_TOKEN=tampered/" "$EOS_STATE_DIR/colab/forward.env"
 status_out="$(EOS_ROOT="$ROOT" "$ROOT/scripts/colab-status" 2>&1 || true)"
 [[ "$status_out" == *"server=unreachable"* ]] || fail "tampered token not detected: $status_out"
 sed -i.bak "s/^STATE_TOKEN=.*/STATE_TOKEN=$token/" "$EOS_STATE_DIR/colab/forward.env"
 status_out="$(EOS_ROOT="$ROOT" "$ROOT/scripts/colab-status" 2>&1 || true)"
 [[ "$status_out" == *"server=ready"* ]] || fail "valid token not accepted: $status_out"
-kill "$http_pid" "$sleep_pid" 2>/dev/null || true
 
 # 7. exact session match: "eos2" must not satisfy session "eos".
 printf '[?] eos2 | Hardware: T4\n' >"$STUB_STATE/session-active"
 status_out="$(EOS_COLAB_SESSION=eos EOS_ROOT="$ROOT" "$ROOT/scripts/colab-status" 2>&1 || true)"
 [[ "$status_out" == *"session=none"* ]] || fail "substring session matched: $status_out"
 printf '[?] eos | Hardware: T4\n' >"$STUB_STATE/session-active"
+status_out="$(EOS_COLAB_SESSION=eos EOS_ROOT="$ROOT" "$ROOT/scripts/colab-status" 2>&1 || true)"
+[[ "$status_out" == *"session=active"* ]] || fail "plain session not matched: $status_out"
+# real CLI wraps the name in brackets: [eos] must match, [eos2] must not.
+printf '[eos] gpu-t4-xyz | Hardware: T4 | Shape: Standard | Variant: GPU\n' >"$STUB_STATE/session-active"
+status_out="$(EOS_COLAB_SESSION=eos EOS_ROOT="$ROOT" "$ROOT/scripts/colab-status" 2>&1 || true)"
+[[ "$status_out" == *"session=active"* ]] || fail "bracketed session not matched: $status_out"
+printf '[eos2] gpu-t4-xyz | Hardware: T4 | Shape: Standard | Variant: GPU\n' >"$STUB_STATE/session-active"
+status_out="$(EOS_COLAB_SESSION=eos EOS_ROOT="$ROOT" "$ROOT/scripts/colab-status" 2>&1 || true)"
+[[ "$status_out" == *"session=none"* ]] || fail "bracketed substring matched: $status_out"
+printf '[?] eos | Hardware: T4\n' >"$STUB_STATE/session-active"
 
 # 8. status reports and stop cleans up.
 EOS_ROOT="$ROOT" "$ROOT/scripts/colab-status" >/dev/null 2>&1 || true
-bash -c 'exec -a "FAKE-COLAB-FWD ssh -L '"$PORT"':127.0.0.1:18888" sleep 60' &
-sleep_pid=$!
-sed -i.bak "s/^STATE_PID=.*/STATE_PID=$sleep_pid/" "$EOS_STATE_DIR/colab/forward.env"
+stop_pid="$(sed -n 's/^STATE_PID=//p' "$EOS_STATE_DIR/colab/forward.env")"
+[[ -n "$stop_pid" ]] || fail "no pid in state"
 EOS_ROOT="$ROOT" "$ROOT/scripts/colab-stop" >/dev/null
 [[ ! -f "$EOS_STATE_DIR/colab/forward.env" ]] || fail "state file not removed"
-kill -0 "$sleep_pid" 2>/dev/null && fail "forward pid still alive" || true
+kill -0 "$stop_pid" 2>/dev/null && fail "forward pid still alive" || true
 grep -q "stopped.*-s eos" "$STUB_STATE/calls" || fail "created session not stopped"
 
 echo "colab scripts ok"

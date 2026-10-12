@@ -5,6 +5,7 @@
 set -euo pipefail
 
 ROOT="${EOS_ROOT:-$HOME/personal/eos}"
+source "$ROOT/scripts/lib-eos-config.sh"
 SESSION="${EOS_COLAB_SESSION:-eos}"
 LOCAL_PORT="${EOS_COLAB_LOCAL_PORT:-18989}"
 REMOTE_PORT="${EOS_COLAB_REMOTE_PORT:-18888}"

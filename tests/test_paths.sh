@@ -57,6 +57,7 @@ required_files=(
   scripts/eos-kb-pending-reminder
   scripts/setup-notebooks
   scripts/setup-colab
+  configs/nvim/data/notebook-template.ipynb
   scripts/colab
   scripts/colab-connect
   scripts/colab-status

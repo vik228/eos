@@ -4,6 +4,7 @@
 set -euo pipefail
 
 ROOT="${EOS_ROOT:-$HOME/personal/eos}"
+source "$ROOT/scripts/lib-eos-config.sh"
 MIN_VERSION="0.7.2"
 COLAB_BIN="${EOS_COLAB_BIN:-$ROOT/scripts/colab}"
 

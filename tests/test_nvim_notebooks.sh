@@ -221,4 +221,22 @@ grep -q 'EOS_NOTEBOOK_PLOTS=MQ==' "$molten_wezterm_loader"
 grep -q 'wezterm.list_panes()' "$molten_wezterm_loader"
 grep -q 'return image_pane_id' "$molten_wezterm_loader"
 
+template="$ROOT/configs/nvim/data/notebook-template.ipynb"
+[[ -f "$template" ]] || { echo "missing notebook template: $template"; exit 1; }
+python3 -c "
+import json,sys
+nb = json.load(open('$template'))
+cells = nb['cells']
+assert any(c['cell_type'] == 'code' and any(l.startswith('# eos-data') for l in c['source']) for c in cells), 'no eos-data cell'
+assert any(c['cell_type'] == 'markdown' for c in cells), 'no instruction cell'
+assert all(c.get('id') for c in cells), 'cells need ids'
+"
+grep -q 'configs/nvim/data/notebook-template.ipynb' "$config"
+grep -q 'options.new_template = template' "$config"
+grep -q 'colab_toggle = { "<leader>jG" }' "$config"
+grep -q 'ColabData' "$config"
+grep -q 'ColabConnect' "$config"
+grep -q 'colab_ensure_forward' "$config"
+grep -q 'eos_colab_status' "$config"
+
 echo "nvim notebook config ok"
