@@ -245,7 +245,6 @@ grep -q 'eos_colab_status' "$config"
 grep -q 'colab_connect_queue = makers' "$config"
 grep -q 'colab_start_forward_run()' "$config"
 # Skip re-init only when the drain produced the same connection.
-grep -q 'prev_key == cur_key' "$config"
 if grep -q 'vim.b\[bufnr\].eos_colab_connecting then' "$config" && grep -A2 'vim.b\[bufnr\].eos_colab_connecting then' "$config" | grep -q 'return true'; then
   echo "connecting guard must not drop queued calls"
   exit 1
@@ -279,9 +278,30 @@ start_use="$(grep -n 'colab_start_forward_run()' "$config" | head -1 | cut -d: -
   echo "colab_start_forward_run must be forward-declared before use" >&2
   exit 1
 }
-# Last-nvim-quits stops the shared forward; siblings keep it.
-grep -q 'pgrep.*-x.*nvim' "$config"
+# Last-lease-holder stops the shared forward (no pgrep process scan).
+grep -q 'colab_hold_lease()' "$config"
+grep -q 'colab_other_lease_alive()' "$config"
+grep -q 'colab/leases' "$config"
+if grep -q 'pgrep.*-x.*nvim' "$config"; then
+  echo "forward stop must use leases, not pgrep"
+  exit 1
+fi
+# Skip re-init only for the connection the buffer was bound at init time.
+grep -q 'eos_colab_conn_key' "$config"
+grep -q 'colab_conn_key(info)' "$config"
+# Drive: probe once per connection, warn only when absent (not on errors).
+grep -q 'eos_colab_drive_probed_key' "$config"
+grep -q 'proc.code == 1 then' "$config"
+grep -q 'botright 12new' "$config"
+grep -q 'Drive mount reported success but is not visible' "$config"
 grep -q 'colab-drive' "$config"
 grep -q ':ColabDrive' "$template"
+# Busy verdict precedes cancel/reset; unknown link never reads as idle.
+grep -q 'vim.g.eos_colab_last_remote_run = nil' "$config"
+grep -q "printf 'unknown'" "$ROOT/scripts/colab-stop"
+grep -q 'link unclear, keeping the session' "$ROOT/scripts/colab-stop"
+# on_exit ignores stale jobs and empty queues.
+grep -q 'vim.g.eos_colab_job ~= exit_jobid' "$config"
+grep -q 'colab_connect_queue or {}' "$config"
 
 echo "nvim notebook config ok"

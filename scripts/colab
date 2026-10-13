@@ -14,7 +14,7 @@ set -euo pipefail
 depth="${EOS_COLAB_SHIM_DEPTH:-0}"
 if [[ "$depth" -ge 3 ]]; then
   echo "colab shim: re-exec loop detected" >&2
-  exit 127
+  exit 1
 fi
 export EOS_COLAB_SHIM_DEPTH=$((depth + 1))
 
@@ -29,27 +29,44 @@ if [[ "$(uname -s)" == Darwin && "$(uname -m)" == arm64 ]]; then
   arch_prefix=(/usr/bin/arch -arm64)
 fi
 
-canon() {
-  local dir
-  dir="$(cd "$(dirname "$1")" 2>/dev/null && pwd -P)" || return 1
-  printf '%s/%s' "$dir" "$(basename "$1")"
+# Same file (follows symlinks): device+inode comparison, so neither a
+# symlinked directory nor a symlinked file can re-select this shim.
+same_file() {
+  local a b
+  if a="$(stat -f '%d %i' "$1" 2>/dev/null)" && b="$(stat -f '%d %i' "$self" 2>/dev/null)"; then
+    [[ "$a" == "$b" ]]
+  elif a="$(stat -c '%d %i' "$1" 2>/dev/null)" && b="$(stat -c '%d %i' "$self" 2>/dev/null)"; then
+    [[ "$a" == "$b" ]]
+  else
+    return 1
+  fi
 }
 
 is_self() {
-  local c
-  c="$(canon "$1")" || return 1
-  [[ "$c" == "$self" ]]
+  same_file "$1"
 }
 
 # Entry point whose interpreter still exists. A stale user-site script
 # (shebang pointing at a deleted python) must not win over later steps:
-# exec would fail with 126 and never fall through.
+# exec would fail with 126 and never fall through. Handles `#! /path`,
+# CRLF, and `#!/usr/bin/env name` (resolved via PATH).
 runnable_entry() {
-  local first interp
+  local first interp name
   [[ -x "$1" ]] || return 1
   if IFS= read -r first <"$1" 2>/dev/null && [[ "$first" == '#!'* ]]; then
     interp="${first:2}"
+    interp="${interp%$'\r'}"
+    interp="${interp#"${interp%%[![:space:]]*}"}"
     interp="${interp%% *}"
+    if [[ "$(basename "$interp")" == "env" ]]; then
+      name="${first:2}"
+      name="${name%$'\r'}"
+      name="${name#*env }"
+      name="${name%% *}"
+      [[ -n "$name" ]] || return 1
+      interp="$(command -v "$name" 2>/dev/null || true)"
+      [[ -n "$interp" ]] || return 1
+    fi
     [[ -x "$interp" ]] || return 1
   fi
   return 0
@@ -76,7 +93,8 @@ if [[ -z "$pick" ]]; then
 fi
 
 if [[ -n "$pick" ]]; then
-  exec "${arch_prefix[@]}" "$pick" "$@"
+  # shellcheck disable=SC2086
+  exec ${arch_prefix[@]+"${arch_prefix[@]}"} "$pick" "$@"
 fi
 
 # 3. A python3 on PATH whose site-packages actually have the module.
@@ -90,7 +108,8 @@ while IFS= read -r python; do
 done < <({ type -aP python3 2>/dev/null; printf '%s\n' /usr/local/bin/python3 /opt/homebrew/bin/python3; } | awk '!seen[$0]++ && NF')
 
 if [[ -n "$pick_python" ]]; then
-  exec "${arch_prefix[@]}" "$pick_python" -m colab_cli.cli "$@"
+  # shellcheck disable=SC2086
+  exec ${arch_prefix[@]+"${arch_prefix[@]}"} "$pick_python" -m colab_cli.cli "$@"
 fi
 
 echo "google-colab-cli is not installed. Run scripts/setup-colab." >&2

@@ -229,4 +229,14 @@ out="$(EOS_ROOT="$ROOT" "$ROOT/scripts/colab" version 2>&1)"
 [[ "$out" == "FALLTHROUGH-OK" ]] || fail "stale entry did not fall through: $out"
 rm -rf "$HOME/Library"
 
+# 12. shim skips itself through a FILE symlink too (directory symlinks are
+# covered in 10): the symlinked shim must not re-exec, the next delegate wins.
+mkdir -p "$tmp/filelink" "$tmp/delegate"
+ln -s "$ROOT/scripts/colab" "$tmp/filelink/colab"
+printf '#!/bin/sh\necho FILELINK-DELEGATE\n' >"$tmp/delegate/colab"
+chmod +x "$tmp/delegate/colab"
+out="$(timeout 15 env PATH="$tmp/filelink:$tmp/delegate:/usr/bin:/bin" HOME="$tmp/home" EOS_ROOT="$ROOT" "$tmp/filelink/colab" version 2>&1)" \
+  || fail "shim file-symlink hang or failure (rc $?)"
+[[ "$out" == "FILELINK-DELEGATE" ]] || fail "file-symlink self not skipped: $out"
+
 echo "colab scripts ok"

@@ -33,12 +33,23 @@ kill_forward() {
   fi
 }
 
-kernel_busy() {
+# Prints busy|idle|unknown for the forwarded server. Unknown (curl failed)
+# must never read as idle: a dropped link with training on the VM is the
+# case that kills work.
+kernel_state() {
   local token="$1" states
-  [[ -n "$token" ]] || return 1
+  [[ -n "$token" ]] || { printf 'unknown'; return 0; }
   states="$(curl -fsS --max-time 10 "http://127.0.0.1:$LOCAL_PORT/api/kernels?token=$token" 2>/dev/null || true)"
-  [[ -n "$states" ]] || return 1
-  printf '%s' "$states" | grep -q '"execution_state"[[:space:]]*:[[:space:]]*"busy"'
+  [[ -n "$states" ]] || { printf 'unknown'; return 0; }
+  if printf '%s' "$states" | grep -q '"execution_state"[[:space:]]*:[[:space:]]*"busy"'; then
+    printf 'busy'
+  else
+    printf 'idle'
+  fi
+}
+
+kernel_busy() {
+  [[ "$(kernel_state "$1")" == "busy" ]]
 }
 
 created=0
@@ -47,10 +58,16 @@ if [[ -f "$STATE" ]]; then
   # shellcheck source=/dev/null
   source "$STATE"
   token="${STATE_TOKEN:-}"
-  if kernel_busy "$token"; then
-    echo "colab-stop: kernel is busy, leaving the session running" >&2
-    exit 0
-  fi
+  case "$(kernel_state "$token")" in
+    busy)
+      echo "colab-stop: kernel is busy, leaving the session running" >&2
+      exit 0
+      ;;
+    unknown)
+      echo "colab-stop: link unclear, keeping the session (state kept)" >&2
+      exit 0
+      ;;
+  esac
   kill_forward "${STATE_PID:-}"
   if [[ -z "${STATE_PID:-}" ]]; then
     while IFS= read -r pid; do

@@ -4,8 +4,9 @@
 # frontend authorization flow, so EOS mounts once per runtime instead:
 # cells then use /content/drive/MyDrive directly.
 #
-#   colab-drive mount [--session NAME]   # interactive: needs browser consent
-#   colab-drive status [--session NAME]  # exit 0 mounted, 1 not, 2 on error
+#   colab-drive mount   # interactive: needs browser consent
+#   colab-drive status  # exit 0 mounted, 1 not, 2 on error
+# The session comes from EOS_COLAB_SESSION; there is no --session flag.
 set -euo pipefail
 
 ROOT="${EOS_ROOT:-$HOME/personal/eos}"

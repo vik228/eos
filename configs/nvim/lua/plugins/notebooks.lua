@@ -1076,10 +1076,12 @@ local function molten_init_local(bufnr)
     flush_pending_molten_evaluations(bufnr)
     return true
   end
-  local kernel_name = notebook_kernel_name()
   vim.b[bufnr].eos_molten_ready = false
   local ok, err = false, nil
   vim.api.nvim_buf_call(bufnr, function()
+    -- Inside buf_call so the project venv resolves from this buffer, not
+    -- whichever buffer is current when an async fallback lands.
+    local kernel_name = notebook_kernel_name()
     ok, err = pcall(vim.cmd, "MoltenInit " .. kernel_name)
     if not ok then
       ok, err = pcall(vim.cmd, "MoltenInit")
@@ -1148,14 +1150,10 @@ local function colab_winbar_for(bufnr)
   if mode == "local" then
     return "kernel: local"
   end
-  local link = vim.g.eos_colab_status or "colab: off"
-  if link == "colab: off" or link == "colab: local" then
-    return "kernel: local"
-  end
-  if link == "colab: connecting…" then
-    return "kernel: connecting…"
-  end
-  return "kernel: " .. link:sub(8)
+  -- Undecided buffers show local: borrowing another buffer's in-flight
+  -- "connecting" status here would paint every notebook while any one
+  -- of them connects.
+  return "kernel: local"
 end
 
 local function colab_refresh_winbar()
@@ -1172,8 +1170,9 @@ local function colab_set_status(text)
   colab_refresh_winbar()
 end
 
-local function colab_mark_activity()
-  if vim.b.eos_colab_mode == "remote" then
+local function colab_mark_activity(bufnr)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  if vim.api.nvim_buf_is_valid(bufnr) and vim.b[bufnr].eos_colab_mode == "remote" then
     vim.g.eos_colab_last_remote_run = os.time()
   end
 end
@@ -1232,7 +1231,11 @@ colab_start_forward_run = function()
         end
       end
     end,
-    on_exit = function(_, code)
+    on_exit = function(exit_jobid, code)
+      -- jobstop also fires on_exit: only the current run owns the queue.
+      if vim.g.eos_colab_job ~= exit_jobid then
+        return
+      end
       vim.g.eos_colab_job = nil
       vim.schedule(function()
         local info = nil
@@ -1262,9 +1265,13 @@ colab_start_forward_run = function()
             token = info.TOKEN,
             at = os.time(),
           }
+          -- A fresh connection restarts the idle clock; a stale timestamp
+          -- from before the last stop would kill the new runtime at once.
+          vim.g.eos_colab_last_remote_run = nil
+          vim.g.eos_colab_busy_notified = nil
           colab_set_status("colab: " .. (info.SESSION or "gpu"))
         end
-        local queued = colab_connect_queue
+        local queued = colab_connect_queue or {}
         colab_connect_queue = nil
         -- Exit 3 means no session and this run did not allow creating one.
         -- Entries that explicitly asked for --create (e.g. :ColabConnect
@@ -1296,7 +1303,7 @@ colab_start_forward_run = function()
   })
   if jobid <= 0 then
     vim.g.eos_colab_job = nil
-    local queued = colab_connect_queue
+    local queued = colab_connect_queue or {}
     colab_connect_queue = nil
     for _, entry in ipairs(queued) do
       entry.cb(nil, "Colab connect could not start.", vim.log.levels.WARN)
@@ -1320,6 +1327,10 @@ local function colab_cancel_connect(reason)
   end
 end
 
+local function colab_conn_key(info)
+  return tostring(info.LOCAL_PORT) .. "\0" .. tostring(info.TOKEN)
+end
+
 local function colab_init_remote_buffer(bufnr, info)
   local url = "http://127.0.0.1:" .. info.LOCAL_PORT .. "?token=" .. info.TOKEN
   local ok = false
@@ -1332,6 +1343,10 @@ local function colab_init_remote_buffer(bufnr, info)
     if ok then
       vim.b.eos_colab_mode = "remote"
       vim.b.eos_molten_initialized = true
+      -- Binds this buffer's kernel to this exact connection. A queued
+      -- duplicate from the same drain sees the same key and skips; a new
+      -- token (server restart) re-inits.
+      vim.b.eos_colab_conn_key = colab_conn_key(info)
     end
   end)
   return ok
@@ -1353,8 +1368,6 @@ local function colab_use_remote(bufnr, create, cb)
   if vim.api.nvim_buf_is_valid(bufnr) then
     vim.b[bufnr].eos_colab_connecting = true
   end
-  local prev = vim.g.eos_colab_connected
-  local prev_key = prev and (tostring(prev.port) .. "\0" .. tostring(prev.token)) or nil
   colab_ensure_forward(create, function(info, err, level)
     if vim.api.nvim_buf_is_valid(bufnr) then
       vim.b[bufnr].eos_colab_connecting = nil
@@ -1369,16 +1382,13 @@ local function colab_use_remote(bufnr, create, cb)
       cb(false)
       return
     end
-    -- Skip only when this drain produced the SAME connection the buffer is
-    -- already initialized on (a queued duplicate). A fresh token (server
-    -- restart) or a never-initialized buffer always re-inits.
-    local cur = vim.g.eos_colab_connected
-    local cur_key = cur and (tostring(cur.port) .. "\0" .. tostring(cur.token)) or nil
-    local already = vim.b[bufnr].eos_molten_initialized
+    -- Skip only when the buffer is already initialized on THIS exact
+    -- connection (a queued duplicate from the same drain). First connects
+    -- (no stored key) and token rotations always re-init.
+    if vim.b[bufnr].eos_molten_initialized
       and vim.b[bufnr].eos_colab_mode == "remote"
-      and prev_key ~= nil
-      and prev_key == cur_key
-    if already then
+      and vim.b[bufnr].eos_colab_conn_key == colab_conn_key(info)
+    then
       cb(true)
       return
     end
@@ -1390,7 +1400,8 @@ local function colab_use_remote(bufnr, create, cb)
     end
     colab_refresh_winbar()
     colab_probe_drive()
-    colab_mark_activity()
+    colab_mark_activity(bufnr)
+    colab_hold_lease()
     vim.notify("Notebook kernel: Colab (" .. (info.SESSION or "gpu") .. ").", vim.log.levels.INFO)
     cb(true)
   end)
@@ -1402,6 +1413,7 @@ local function colab_toggle()
     pcall(vim.cmd, "MoltenDeinit")
     vim.b[bufnr].eos_colab_mode = "local"
     vim.b[bufnr].eos_molten_initialized = nil
+    vim.b[bufnr].eos_colab_conn_key = nil
     colab_set_status("colab: local")
     vim.notify("Notebook kernel: local. <leader>jG goes back to Colab.", vim.log.levels.INFO)
     return
@@ -1424,6 +1436,49 @@ local function colab_stop_protected(output)
   return (output or ""):find("leaving the session running", 1, true) ~= nil
 end
 
+-- Lease files: one per nvim holding the shared forward. A process scan
+-- (pgrep nvim) counts unrelated/agent/headless nvims and misses on some
+-- platforms; leases with live-pid checks do neither. Stale leases from
+-- crashed nvims are pruned by the pid check.
+local function colab_lease_dir()
+  local statedir = vim.env.EOS_STATE_DIR
+  if statedir == nil or statedir == "" then
+    statedir = vim.fn.expand("~/.local/state/eos")
+  end
+  return statedir .. "/colab/leases"
+end
+
+local function colab_lease_path()
+  return colab_lease_dir() .. "/nvim-" .. tostring(vim.fn.getpid())
+end
+
+local function colab_hold_lease()
+  vim.fn.mkdir(colab_lease_dir(), "p")
+  vim.fn.writefile({ "1" }, colab_lease_path())
+end
+
+local function colab_release_lease()
+  pcall(vim.fn.delete, colab_lease_path())
+end
+
+local function colab_other_lease_alive()
+  for _, path in ipairs(vim.fn.glob(colab_lease_dir() .. "/nvim-*", false, true)) do
+    if path ~= colab_lease_path() then
+      local pid = tonumber(path:match("nvim-(%d+)$"))
+            if pid ~= nil then
+              -- Signal 0 via luv tests liveness without delivering anything.
+              local uv = vim.uv or vim.loop
+              local ok = uv ~= nil and pcall(uv.kill, pid, 0)
+        if ok then
+          return true
+        end
+        pcall(vim.fn.delete, path)
+      end
+    end
+  end
+  return false
+end
+
 local function colab_reset_remote_buffers()
   for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
     if vim.api.nvim_buf_is_valid(bufnr) and vim.b[bufnr].eos_colab_mode == "remote" then
@@ -1432,18 +1487,25 @@ local function colab_reset_remote_buffers()
       end)
       vim.b[bufnr].eos_colab_mode = nil
       vim.b[bufnr].eos_molten_initialized = nil
+      vim.b[bufnr].eos_colab_conn_key = nil
     end
   end
 end
 
 local function colab_stop_now(reason)
-  colab_cancel_connect("Colab connect cancelled.")
+  -- Verdict first: cancelling connects and flipping status before knowing
+  -- the stop was deferred leaves nvim believing Colab is off while the
+  -- busy kernel keeps running.
   local output = colab_stop_sync()
   if colab_stop_protected(output) then
     vim.notify("Colab kernel is busy: stop deferred, training keeps running.", vim.log.levels.WARN)
     return
   end
+  colab_cancel_connect("Colab connect cancelled.")
   vim.g.eos_colab_connected = nil
+  vim.g.eos_colab_last_remote_run = nil
+  vim.g.eos_colab_busy_notified = nil
+  vim.g.eos_colab_drive_probed_key = nil
   colab_reset_remote_buffers()
   colab_set_status("colab: off")
   vim.notify(reason, vim.log.levels.INFO)
@@ -1456,9 +1518,11 @@ local function colab_reinit_remote_buffers(info)
       vim.api.nvim_buf_call(bufnr, function()
         pcall(vim.cmd, "MoltenDeinit")
         vim.b.eos_molten_initialized = nil
+        vim.b.eos_colab_conn_key = nil
         vim.b.eos_molten_ready = false
         if pcall(vim.cmd, { cmd = "MoltenInit", args = { url } }) then
           vim.b.eos_molten_initialized = true
+          vim.b.eos_colab_conn_key = tostring(info.LOCAL_PORT) .. "\0" .. tostring(info.TOKEN)
         end
       end)
     end
@@ -1469,9 +1533,18 @@ end
 -- frontend authorization flow. EOS mounts once per runtime instead; cells
 -- then use /content/drive/MyDrive directly.
 colab_probe_drive = function()
+  local conn = vim.g.eos_colab_connected
+  local key = conn and (tostring(conn.port) .. "\0" .. tostring(conn.token)) or nil
+  -- Once per connection: every buffer's remote init would otherwise nag.
+  if key == nil or vim.g.eos_colab_drive_probed_key == key then
+    return
+  end
+  vim.g.eos_colab_drive_probed_key = key
   vim.system({ colab_script("colab-drive"), "status" }, { text = true }, function(proc)
     vim.schedule(function()
-      if proc.code ~= 0 then
+      -- Exit 1 means absent; exit 2 means the check itself failed, which
+      -- must not read as "not mounted".
+      if proc.code == 1 then
         vim.notify("Drive is not mounted on the Colab VM. :ColabDrive mounts it (browser consent).", vim.log.levels.WARN)
       end
     end)
@@ -1483,19 +1556,34 @@ local function colab_drive_mount()
     vim.notify("Connect first: :ColabConnect, then :ColabDrive.", vim.log.levels.WARN)
     return
   end
-  vim.cmd("botright 12split")
-  local jobid = vim.fn.termopen({ colab_script("colab-drive"), "mount" }, {
+  -- Fresh buffer first: termopen on the notebook would take it over (or
+  -- throw on a modified buffer).
+  local ok, split_err = pcall(vim.cmd, "botright 12new")
+  if not ok then
+    vim.notify("Could not open a terminal for Drive mount.", vim.log.levels.WARN)
+    return
+  end
+  local ok_open, jobid = pcall(vim.fn.termopen, { colab_script("colab-drive"), "mount" }, {
     on_exit = function(_, code)
       vim.schedule(function()
-        if code == 0 then
-          vim.notify("Drive mounted at /content/drive. Cells can use /content/drive/MyDrive.", vim.log.levels.INFO)
-        else
+        if code ~= 0 then
           vim.notify("Drive mount did not complete (see terminal). :ColabDrive retries.", vim.log.levels.WARN)
+          return
         end
+        -- drivemount exits 0 even on failure: verify before claiming.
+        vim.system({ colab_script("colab-drive"), "status" }, { text = true }, function(proc)
+          vim.schedule(function()
+            if proc.code == 0 then
+              vim.notify("Drive mounted at /content/drive. Cells can use /content/drive/MyDrive.", vim.log.levels.INFO)
+            else
+              vim.notify("Drive mount reported success but is not visible. :ColabDrive retries.", vim.log.levels.WARN)
+            end
+          end)
+        end)
       end)
     end,
   })
-  if jobid <= 0 then
+  if not ok_open or jobid <= 0 then
     vim.notify("Could not open a terminal for Drive mount.", vim.log.levels.WARN)
   end
 end
@@ -1576,6 +1664,7 @@ local function colab_idle_check()
       end
       colab_reinit_remote_buffers(info)
       vim.g.eos_colab_last_remote_run = os.time()
+      colab_hold_lease()
       vim.notify("Colab link healed. Re-run cells on the fresh kernel.", vim.log.levels.INFO)
     end)
   end)
@@ -1629,8 +1718,8 @@ local function evaluate_range_inline(start_line, end_line)
     return false
   end
 
-  colab_mark_activity()
   local bufnr = vim.api.nvim_get_current_buf()
+  colab_mark_activity(bufnr)
   if not vim.b[bufnr].eos_molten_initialized then
     pending_molten_evaluations[bufnr] = pending_molten_evaluations[bufnr] or {}
     table.insert(pending_molten_evaluations[bufnr], { start_line = start_line, end_line = end_line })
@@ -2105,16 +2194,14 @@ return {
         group = colab_group,
         callback = function()
           if vim.g.eos_colab_connected == nil then
+            colab_release_lease()
             return
           end
-          -- The forward is shared machine-wide: only stop it when no other
-          -- nvim is still running, otherwise quitting one window kills
-          -- Colab kernels for every other open nvim.
-          local siblings = vim.fn.system({ "pgrep", "-x", "nvim" })
-          for pid in (siblings or ""):gmatch("%d+") do
-            if tonumber(pid) ~= vim.fn.getpid() then
-              return
-            end
+          -- The forward is shared machine-wide: only the last lease holder
+          -- stops it, otherwise quitting one window kills Colab for the rest.
+          colab_release_lease()
+          if colab_other_lease_alive() then
+            return
           end
           colab_stop_sync()
         end,
@@ -2143,24 +2230,28 @@ return {
         pattern = "MoltenKernelReady",
         callback = function(args)
           local seen = {}
+          -- Molten fires KernelReady with no buffer attached; args.buf is
+          -- just the current buffer. Flushing an uninitialized buffer with
+          -- queued cells evaluates against no kernel and drops the queue,
+          -- so every target needs eos_molten_initialized. Buffers with an
+          -- empty queue only get ready=true (harmless either way).
           local function flush(bufnr)
-            if bufnr and bufnr ~= 0 and not seen[bufnr] and vim.api.nvim_buf_is_valid(bufnr) then
-              seen[bufnr] = true
-              flush_pending_molten_evaluations(bufnr)
+            if bufnr == nil or bufnr == 0 or seen[bufnr] then
+              return
             end
+            if not vim.api.nvim_buf_is_valid(bufnr) then
+              return
+            end
+            if not vim.b[bufnr].eos_molten_initialized and pending_molten_evaluations[bufnr] then
+              return
+            end
+            seen[bufnr] = true
+            flush_pending_molten_evaluations(bufnr)
           end
           flush(args.buf)
-          -- Only initialized buffers: flushing a buffer with queued cells
-          -- but no kernel evaluates against nothing and lands on a
-          -- "select a kernel" prompt, losing the queue.
-          local current = vim.api.nvim_get_current_buf()
-          if vim.b[current].eos_molten_initialized then
-            flush(current)
-          end
+          flush(vim.api.nvim_get_current_buf())
           for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
-            if vim.b[bufnr].eos_molten_initialized
-              and (vim.b[bufnr].eos_molten_ready == false or pending_molten_evaluations[bufnr])
-            then
+            if vim.b[bufnr].eos_molten_ready == false or pending_molten_evaluations[bufnr] then
               flush(bufnr)
             end
           end
