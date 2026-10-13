@@ -6,25 +6,60 @@
 # The winner is exec'd AFTER the search loops: exec inside
 # `while read ... done < <(...)` would inherit the loop's stdin (the search
 # pipe at EOF) instead of our own stdin, which breaks --proxy-mode bridging.
+# Candidates are canonicalized before self-comparison so a symlinked PATH
+# entry can never select this shim again (infinite self-exec). A depth guard
+# stops any unforeseen re-exec cycle.
 set -euo pipefail
 
-maybe_arch() {
-  if [[ "$(uname -s)" == Darwin && "$(uname -m)" == arm64 ]]; then
-    set -- /usr/bin/arch -arm64 "$@"
-  fi
-  exec "$@"
-}
+depth="${EOS_COLAB_SHIM_DEPTH:-0}"
+if [[ "$depth" -ge 3 ]]; then
+  echo "colab shim: re-exec loop detected" >&2
+  exit 127
+fi
+export EOS_COLAB_SHIM_DEPTH=$((depth + 1))
 
 if [[ -n "${EOS_COLAB_BIN:-}" ]]; then
   exec "$EOS_COLAB_BIN" "$@"
 fi
 
 self="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/colab"
+
+arch_prefix=()
+if [[ "$(uname -s)" == Darwin && "$(uname -m)" == arm64 ]]; then
+  arch_prefix=(/usr/bin/arch -arm64)
+fi
+
+canon() {
+  local dir
+  dir="$(cd "$(dirname "$1")" 2>/dev/null && pwd -P)" || return 1
+  printf '%s/%s' "$dir" "$(basename "$1")"
+}
+
+is_self() {
+  local c
+  c="$(canon "$1")" || return 1
+  [[ "$c" == "$self" ]]
+}
+
+# Entry point whose interpreter still exists. A stale user-site script
+# (shebang pointing at a deleted python) must not win over later steps:
+# exec would fail with 126 and never fall through.
+runnable_entry() {
+  local first interp
+  [[ -x "$1" ]] || return 1
+  if IFS= read -r first <"$1" 2>/dev/null && [[ "$first" == '#!'* ]]; then
+    interp="${first:2}"
+    interp="${interp%% *}"
+    [[ -x "$interp" ]] || return 1
+  fi
+  return 0
+}
+
 pick=""
 
 # 1. Entry points under per-version user site dirs, newest python first.
 while IFS= read -r candidate; do
-  if [[ -x "$candidate" && "$candidate" != "$self" ]]; then
+  if runnable_entry "$candidate" && ! is_self "$candidate"; then
     pick="$candidate"
     break
   fi
@@ -33,7 +68,7 @@ done < <(ls -d "$HOME"/Library/Python/*/bin/colab 2>/dev/null | sort -Vr)
 # 2. Anything else on PATH that is not this shim.
 if [[ -z "$pick" ]]; then
   while IFS= read -r candidate; do
-    if [[ -x "$candidate" && "$candidate" != "$self" ]]; then
+    if runnable_entry "$candidate" && ! is_self "$candidate"; then
       pick="$candidate"
       break
     fi
@@ -41,21 +76,21 @@ if [[ -z "$pick" ]]; then
 fi
 
 if [[ -n "$pick" ]]; then
-  maybe_arch "$pick" "$@"
+  exec "${arch_prefix[@]}" "$pick" "$@"
 fi
 
 # 3. A python3 on PATH whose site-packages actually have the module.
+pick_python=""
 while IFS= read -r python; do
   [[ -n "$python" ]] || continue
   if "$python" -c "import colab_cli.cli" </dev/null 2>/dev/null; then
-    pick="$python -m colab_cli.cli"
+    pick_python="$python"
     break
   fi
 done < <({ type -aP python3 2>/dev/null; printf '%s\n' /usr/local/bin/python3 /opt/homebrew/bin/python3; } | awk '!seen[$0]++ && NF')
 
-if [[ -n "$pick" && "$pick" != "$self" ]]; then
-  # shellcheck disable=SC2086
-  maybe_arch $pick "$@"
+if [[ -n "$pick_python" ]]; then
+  exec "${arch_prefix[@]}" "$pick_python" -m colab_cli.cli "$@"
 fi
 
 echo "google-colab-cli is not installed. Run scripts/setup-colab." >&2

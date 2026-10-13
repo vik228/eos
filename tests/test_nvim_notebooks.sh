@@ -236,7 +236,52 @@ grep -q 'options.new_template = template' "$config"
 grep -q 'colab_toggle = { "<leader>jG" }' "$config"
 grep -q 'ColabData' "$config"
 grep -q 'ColabConnect' "$config"
+grep -q 'ColabDrive' "$config"
+grep -q 'ColabStop' "$config"
 grep -q 'colab_ensure_forward' "$config"
+grep -q 'colab_start_forward_run' "$config"
 grep -q 'eos_colab_status' "$config"
+# Single in-flight run: every call enqueues, create intent retried at drain.
+grep -q 'colab_connect_queue = makers' "$config"
+grep -q 'colab_start_forward_run()' "$config"
+# Skip re-init only when the drain produced the same connection.
+grep -q 'prev_key == cur_key' "$config"
+if grep -q 'vim.b\[bufnr\].eos_colab_connecting then' "$config" && grep -A2 'vim.b\[bufnr\].eos_colab_connecting then' "$config" | grep -q 'return true'; then
+  echo "connecting guard must not drop queued calls"
+  exit 1
+fi
+# Fan-out flushes initialized buffers only (no kernel-less evaluates).
+grep -q 'vim.b\[bufnr\].eos_molten_initialized' "$config"
+# Local fallback is buffer-scoped (async callbacks run anywhere).
+grep -q 'molten_init_local(bufnr)' "$config"
+if grep -q '[^_(]molten_init_local()' "$config"; then
+  echo "bare molten_init_local() acts on the wrong buffer"
+  exit 1
+fi
+# Winbar connecting state is per-buffer, never global.
+grep -q 'vim.b\[bufnr\].eos_colab_connecting then' "$config"
+# Heal resets ready so post-heal cells wait for the fresh kernel.
+grep -q 'vim.b.eos_molten_ready = false' "$config"
+# Busy kernels survive idle checks; stop honors the busy verdict.
+grep -q 'colab_remote_busy' "$config"
+grep -q 'leaving the session running' "$config"
+grep -q 'flush_pending_molten_evaluations(bufnr)' "$config"
+# Forward declarations precede their first use (Lua resolves locals lexically).
+probe_decl="$(grep -n '^local colab_probe_drive$' "$config" | cut -d: -f1)"
+probe_use="$(grep -n 'colab_probe_drive()' "$config" | head -1 | cut -d: -f1)"
+[[ -n "$probe_decl" && -n "$probe_use" && "$probe_decl" -lt "$probe_use" ]] || {
+  echo "colab_probe_drive must be forward-declared before use" >&2
+  exit 1
+}
+start_decl="$(grep -n '^local colab_start_forward_run$' "$config" | cut -d: -f1)"
+start_use="$(grep -n 'colab_start_forward_run()' "$config" | head -1 | cut -d: -f1)"
+[[ -n "$start_decl" && -n "$start_use" && "$start_decl" -lt "$start_use" ]] || {
+  echo "colab_start_forward_run must be forward-declared before use" >&2
+  exit 1
+}
+# Last-nvim-quits stops the shared forward; siblings keep it.
+grep -q 'pgrep.*-x.*nvim' "$config"
+grep -q 'colab-drive' "$config"
+grep -q ':ColabDrive' "$template"
 
 echo "nvim notebook config ok"

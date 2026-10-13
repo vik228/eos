@@ -1063,28 +1063,36 @@ local function flush_pending_molten_evaluations(bufnr)
   end
 end
 
-local function molten_init_local()
+local function molten_init_local(bufnr)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  if not vim.api.nvim_buf_is_valid(bufnr) then
+    return false
+  end
   -- A failed ColabConnect must not spawn a second kernel over a working
   -- local one. That second init clears ready, and the next cell queues
-  -- until a KernelReady that already happened.
-  if vim.b.eos_molten_initialized and vim.b.eos_colab_mode == "local" then
-    vim.b.eos_molten_ready = true
+  -- until a KernelReady that already happened. Queued cells run now, in
+  -- order, on the live kernel instead of just marking ready.
+  if vim.b[bufnr].eos_molten_initialized and vim.b[bufnr].eos_colab_mode == "local" then
+    flush_pending_molten_evaluations(bufnr)
     return true
   end
   local kernel_name = notebook_kernel_name()
-  vim.b.eos_molten_ready = false
-  local ok, err = pcall(vim.cmd, "MoltenInit " .. kernel_name)
-  if not ok then
-    ok, err = pcall(vim.cmd, "MoltenInit")
-  end
+  vim.b[bufnr].eos_molten_ready = false
+  local ok, err = false, nil
+  vim.api.nvim_buf_call(bufnr, function()
+    ok, err = pcall(vim.cmd, "MoltenInit " .. kernel_name)
+    if not ok then
+      ok, err = pcall(vim.cmd, "MoltenInit")
+    end
+  end)
 
   if ok then
-    vim.b.eos_molten_initialized = true
-    vim.b.eos_colab_mode = "local"
+    vim.b[bufnr].eos_molten_initialized = true
+    vim.b[bufnr].eos_colab_mode = "local"
     return true
   end
 
-  vim.b.eos_molten_ready = nil
+  vim.b[bufnr].eos_molten_ready = nil
   if not molten_host_dead(err) then
     vim.notify("Could not initialize a Jupyter kernel for Molten.", vim.log.levels.WARN)
   else
@@ -1126,8 +1134,9 @@ local function colab_parse_kv(output)
 end
 
 local function colab_winbar_for(bufnr)
-  local link = vim.g.eos_colab_status or "colab: off"
-  if link == "colab: connecting…" or vim.b[bufnr].eos_colab_connecting then
+  -- Connecting is per-buffer: a global check would paint every notebook
+  -- "connecting" while any one of them (or the idle heal) connects.
+  if vim.b[bufnr].eos_colab_connecting then
     return "kernel: connecting…"
   end
   local mode = vim.b[bufnr].eos_colab_mode
@@ -1139,6 +1148,7 @@ local function colab_winbar_for(bufnr)
   if mode == "local" then
     return "kernel: local"
   end
+  local link = vim.g.eos_colab_status or "colab: off"
   if link == "colab: off" or link == "colab: local" then
     return "kernel: local"
   end
@@ -1177,6 +1187,9 @@ local colab_connect_queue = nil
 -- definition lives further below. Without this, Lua resolves a global nil.
 local colab_probe_drive
 
+-- Forward declaration (defined below ensure_forward).
+local colab_start_forward_run
+
 local function colab_ensure_forward(create, cb)
   cb = cb or function() end
   if colab_connect_queue ~= nil then
@@ -1184,7 +1197,14 @@ local function colab_ensure_forward(create, cb)
     return
   end
   colab_connect_queue = { { create = create, cb = cb } }
+  colab_start_forward_run()
+end
 
+-- Starts the colab-connect job for the currently queued entries. The
+-- --create flag is decided at drain time (see on_exit): an explicit
+-- :ColabConnect that arrives while an auto Shift+Enter connect is already
+-- in flight must still create the session.
+colab_start_forward_run = function()
   local want_create = false
   for _, entry in ipairs(colab_connect_queue) do
     if entry.create then
@@ -1246,6 +1266,28 @@ local function colab_ensure_forward(create, cb)
         end
         local queued = colab_connect_queue
         colab_connect_queue = nil
+        -- Exit 3 means no session and this run did not allow creating one.
+        -- Entries that explicitly asked for --create (e.g. :ColabConnect
+        -- while an auto connect was in flight) get a second run instead of
+        -- a wrong local fallback; the rest fail as before.
+        if info == nil and code == 3 then
+          local makers, rest = {}, {}
+          for _, entry in ipairs(queued) do
+            if entry.create then
+              table.insert(makers, entry)
+            else
+              table.insert(rest, entry)
+            end
+          end
+          if #makers > 0 then
+            for _, entry in ipairs(rest) do
+              entry.cb(nil, err, level)
+            end
+            colab_connect_queue = makers
+            colab_start_forward_run()
+            return
+          end
+        end
         for _, entry in ipairs(queued) do
           entry.cb(info, err, level)
         end
@@ -1279,15 +1321,6 @@ local function colab_cancel_connect(reason)
 end
 
 local function colab_init_remote_buffer(bufnr, info)
-  local conn = vim.g.eos_colab_connected
-  if vim.b[bufnr].eos_colab_mode == "remote"
-    and vim.b[bufnr].eos_molten_initialized
-    and conn
-    and conn.port == info.LOCAL_PORT
-    and conn.token == info.TOKEN
-  then
-    return true
-  end
   local url = "http://127.0.0.1:" .. info.LOCAL_PORT .. "?token=" .. info.TOKEN
   local ok = false
   vim.api.nvim_buf_call(bufnr, function()
@@ -1312,16 +1345,16 @@ local function colab_use_remote(bufnr, create, cb)
     return
   end
 
-  -- A second run while one is in flight shares it: its cells are already
-  -- queued and flush when the first attempt finishes. Without this, every
-  -- press creates another kernel object and the next evaluate stops at a
-  -- "Please select a kernel" prompt.
-  if vim.api.nvim_buf_is_valid(bufnr) and vim.b[bufnr].eos_colab_connecting then
-    return true
-  end
+  -- Every call enqueues on the single in-flight run (a late :ColabConnect
+  -- still contributes its --create intent at drain time). Duplicate kernel
+  -- objects are prevented by the skip below, not by dropping calls: each
+  -- caller's cells stay queued and flush when the attempt finishes.
+  -- The connecting flag only drives the winbar.
   if vim.api.nvim_buf_is_valid(bufnr) then
     vim.b[bufnr].eos_colab_connecting = true
   end
+  local prev = vim.g.eos_colab_connected
+  local prev_key = prev and (tostring(prev.port) .. "\0" .. tostring(prev.token)) or nil
   colab_ensure_forward(create, function(info, err, level)
     if vim.api.nvim_buf_is_valid(bufnr) then
       vim.b[bufnr].eos_colab_connecting = nil
@@ -1334,6 +1367,19 @@ local function colab_use_remote(bufnr, create, cb)
     end
     if not vim.api.nvim_buf_is_valid(bufnr) then
       cb(false)
+      return
+    end
+    -- Skip only when this drain produced the SAME connection the buffer is
+    -- already initialized on (a queued duplicate). A fresh token (server
+    -- restart) or a never-initialized buffer always re-inits.
+    local cur = vim.g.eos_colab_connected
+    local cur_key = cur and (tostring(cur.port) .. "\0" .. tostring(cur.token)) or nil
+    local already = vim.b[bufnr].eos_molten_initialized
+      and vim.b[bufnr].eos_colab_mode == "remote"
+      and prev_key ~= nil
+      and prev_key == cur_key
+    if already then
+      cb(true)
       return
     end
     if not colab_init_remote_buffer(bufnr, info) then
@@ -1363,7 +1409,7 @@ local function colab_toggle()
   vim.notify("Connecting to Colab (may create a paid runtime)...", vim.log.levels.INFO)
   colab_use_remote(bufnr, true, function(ok)
     if not ok then
-      molten_init_local()
+      molten_init_local(bufnr)
     end
   end)
 end
@@ -1410,6 +1456,7 @@ local function colab_reinit_remote_buffers(info)
       vim.api.nvim_buf_call(bufnr, function()
         pcall(vim.cmd, "MoltenDeinit")
         vim.b.eos_molten_initialized = nil
+        vim.b.eos_molten_ready = false
         if pcall(vim.cmd, { cmd = "MoltenInit", args = { url } }) then
           vim.b.eos_molten_initialized = true
         end
@@ -1558,20 +1605,20 @@ local function molten_init_kernel()
     local bufnr = vim.api.nvim_get_current_buf()
     colab_use_remote(bufnr, false, function(ok)
       if not ok then
-        molten_init_local()
+        molten_init_local(bufnr)
       end
     end)
     return true
   end
 
   if vim.b.eos_colab_mode == "local" or colab_env("EOS_COLAB_AUTO", "1") ~= "1" then
-    return molten_init_local()
+    return molten_init_local(vim.api.nvim_get_current_buf())
   end
 
   local bufnr = vim.api.nvim_get_current_buf()
   colab_use_remote(bufnr, false, function(ok)
     if not ok then
-      molten_init_local()
+      molten_init_local(bufnr)
     end
   end)
   return true
@@ -2004,7 +2051,7 @@ return {
         vim.notify("Connecting to Colab (may create a paid runtime)...", vim.log.levels.INFO)
         colab_use_remote(bufnr, true, function(ok)
           if not ok then
-            molten_init_local()
+            molten_init_local(bufnr)
           end
         end)
       end, {})
@@ -2103,9 +2150,17 @@ return {
             end
           end
           flush(args.buf)
-          flush(vim.api.nvim_get_current_buf())
+          -- Only initialized buffers: flushing a buffer with queued cells
+          -- but no kernel evaluates against nothing and lands on a
+          -- "select a kernel" prompt, losing the queue.
+          local current = vim.api.nvim_get_current_buf()
+          if vim.b[current].eos_molten_initialized then
+            flush(current)
+          end
           for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
-            if vim.b[bufnr].eos_molten_ready == false or pending_molten_evaluations[bufnr] then
+            if vim.b[bufnr].eos_molten_initialized
+              and (vim.b[bufnr].eos_molten_ready == false or pending_molten_evaluations[bufnr])
+            then
               flush(bufnr)
             end
           end

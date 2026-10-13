@@ -200,4 +200,33 @@ EOS_ROOT="$ROOT" "$ROOT/scripts/colab-stop" >/dev/null
 kill -0 "$stop_pid" 2>/dev/null && fail "forward pid still alive" || true
 grep -q "stopped.*-s eos" "$STUB_STATE/calls" || fail "created session not stopped"
 
+# 9. shim step 1 preserves stdin (proxy-mode regression): newest user-site
+# entry is a stdin echo; bytes piped through the real shim must come back.
+unset EOS_COLAB_BIN
+mkdir -p "$HOME/Library/Python/3.99/bin"
+printf '#!/bin/sh\ncat\n' >"$HOME/Library/Python/3.99/bin/colab"
+chmod +x "$HOME/Library/Python/3.99/bin/colab"
+echoed="$(printf 'STDIN-PROBE' | EOS_ROOT="$ROOT" "$ROOT/scripts/colab" ignored-arg 2>/dev/null)"
+[[ "$echoed" == "STDIN-PROBE" ]] || fail "shim swallowed stdin: got '$echoed'"
+rm -rf "$HOME/Library"
+
+# 10. shim never execs itself: PATH holds the scripts dir through a symlink,
+# step 1 is empty, so step 2 must skip the symlinked shim and use the stub.
+mkdir -p "$tmp/linkdir"
+ln -s "$ROOT/scripts" "$tmp/linkdir/scripts-link"
+out="$(timeout 15 env PATH="$tmp/linkdir/scripts-link:$stubbin:/usr/bin:/bin" HOME="$tmp/home" EOS_ROOT="$ROOT" "$ROOT/scripts/colab" version 2>&1)" \
+  || fail "shim self-exec hang or failure (rc $?)"
+[[ "$out" == "0.7.4" ]] || fail "self-exclusion picked wrong delegate: $out"
+
+# 11. shim skips a stale newest entry (dead shebang interpreter) and falls
+# through to the next working one.
+mkdir -p "$HOME/Library/Python/3.99/bin" "$HOME/Library/Python/3.98/bin"
+printf '#!/nonexistent/python3\n' >"$HOME/Library/Python/3.99/bin/colab"
+chmod +x "$HOME/Library/Python/3.99/bin/colab"
+printf '#!/bin/sh\necho FALLTHROUGH-OK\n' >"$HOME/Library/Python/3.98/bin/colab"
+chmod +x "$HOME/Library/Python/3.98/bin/colab"
+out="$(EOS_ROOT="$ROOT" "$ROOT/scripts/colab" version 2>&1)"
+[[ "$out" == "FALLTHROUGH-OK" ]] || fail "stale entry did not fall through: $out"
+rm -rf "$HOME/Library"
+
 echo "colab scripts ok"

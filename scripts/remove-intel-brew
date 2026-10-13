@@ -15,14 +15,25 @@ EXECUTE=0
 
 [[ -f "$MANIFEST" ]] || { echo "manifest missing: $MANIFEST" >&2; exit 2; }
 
+# One-shot migration guard: only an ARM Mac with a working ARM Homebrew may
+# run this. On an Intel Mac --execute would wipe the only Homebrew.
+[[ "$(uname -s)" == Darwin && "$(uname -m)" == arm64 ]] || { echo "refusing: Intel-tree removal only makes sense on ARM macOS" >&2; exit 2; }
+[[ -x /opt/homebrew/bin/brew ]] || { echo "refusing: no ARM Homebrew at /opt/homebrew" >&2; exit 2; }
+
 # Every LINK entry must still resolve under a removed tree, or abort.
+# Missing links are skipped so partial runs are safe to rerun.
 while IFS= read -r line; do
   [[ "$line" == LINK:* ]] || continue
   link="${line#LINK:}"
   link="${link%% -> *}"
-  target="$(readlink "$link")"
+  case "$link" in
+    /usr/local/*) ;;
+    *) echo "refusing link outside /usr/local: $link" >&2; exit 2 ;;
+  esac
+  [[ -L "$link" ]] || continue
+  target="$(readlink "$link" || true)"
   case "$target" in
-    ../Cellar/*|../Caskroom/*|../Homebrew/*|/usr/local/Cellar/*|/usr/local/Caskroom/*|/usr/local/Homebrew/*|/usr/local/opt/*) ;;
+    ../Cellar/*|../../Cellar/*|../../../Cellar/*|../Caskroom/*|../Homebrew/*|/usr/local/Cellar/*|/usr/local/Caskroom/*|/usr/local/Homebrew/*|/usr/local/opt/*) ;;
     *) echo "refusing unexpected link target: $link -> $target" >&2; exit 2 ;;
   esac
   rm -f "$link"

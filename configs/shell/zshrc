@@ -29,4 +29,7 @@ if command -v mise >/dev/null 2>&1; then
   eval "$(mise activate zsh)"
 fi
 
+# Guards stay first even after tool activators above prepend their shims.
+export PATH="$EOS_ROOT/bin/guards:$EOS_ROOT/scripts:$EOS_ROOT/bin:$HOME/.local/bin:$PATH"
+
 bindkey -e
