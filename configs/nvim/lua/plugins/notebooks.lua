@@ -1046,11 +1046,15 @@ end
 local function flush_pending_molten_evaluations(bufnr)
   local pending = pending_molten_evaluations[bufnr]
   pending_molten_evaluations[bufnr] = nil
-  if not pending or not vim.api.nvim_buf_is_valid(bufnr) then
+  if not vim.api.nvim_buf_is_valid(bufnr) then
     return
   end
-
+  -- A ready kernel with an empty queue must still clear the not-ready flag.
+  -- Otherwise the next cell queues forever: KernelReady already fired.
   vim.b[bufnr].eos_molten_ready = true
+  if not pending then
+    return
+  end
   for _, range in ipairs(pending) do
     local ok, err = evaluate_molten_range(bufnr, range.start_line, range.end_line)
     if not ok then
@@ -1060,6 +1064,13 @@ local function flush_pending_molten_evaluations(bufnr)
 end
 
 local function molten_init_local()
+  -- A failed ColabConnect must not spawn a second kernel over a working
+  -- local one. That second init clears ready, and the next cell queues
+  -- until a KernelReady that already happened.
+  if vim.b.eos_molten_initialized and vim.b.eos_colab_mode == "local" then
+    vim.b.eos_molten_ready = true
+    return true
+  end
   local kernel_name = notebook_kernel_name()
   vim.b.eos_molten_ready = false
   local ok, err = pcall(vim.cmd, "MoltenInit " .. kernel_name)
@@ -1115,6 +1126,10 @@ local function colab_parse_kv(output)
 end
 
 local function colab_winbar_for(bufnr)
+  local link = vim.g.eos_colab_status or "colab: off"
+  if link == "colab: connecting…" or vim.b[bufnr].eos_colab_connecting then
+    return "kernel: connecting…"
+  end
   local mode = vim.b[bufnr].eos_colab_mode
   if mode == "remote" then
     local conn = vim.g.eos_colab_connected
@@ -1124,7 +1139,6 @@ local function colab_winbar_for(bufnr)
   if mode == "local" then
     return "kernel: local"
   end
-  local link = vim.g.eos_colab_status or "colab: off"
   if link == "colab: off" or link == "colab: local" then
     return "kernel: local"
   end
@@ -1261,7 +1275,13 @@ local function colab_cancel_connect(reason)
 end
 
 local function colab_init_remote_buffer(bufnr, info)
-  if vim.b[bufnr].eos_molten_initialized then
+  local conn = vim.g.eos_colab_connected
+  if vim.b[bufnr].eos_colab_mode == "remote"
+    and vim.b[bufnr].eos_molten_initialized
+    and conn
+    and conn.port == info.LOCAL_PORT
+    and conn.token == info.TOKEN
+  then
     return true
   end
   local url = "http://127.0.0.1:" .. info.LOCAL_PORT .. "?token=" .. info.TOKEN
@@ -1269,6 +1289,8 @@ local function colab_init_remote_buffer(bufnr, info)
   vim.api.nvim_buf_call(bufnr, function()
     pcall(vim.cmd, "MoltenDeinit")
     vim.b.eos_molten_initialized = nil
+    vim.b.eos_colab_mode = nil
+    vim.b.eos_molten_ready = false
     ok = pcall(vim.cmd, { cmd = "MoltenInit", args = { url } })
     if ok then
       vim.b.eos_colab_mode = "remote"
@@ -1310,16 +1332,13 @@ local function colab_use_remote(bufnr, create, cb)
       cb(false)
       return
     end
-    if vim.b[bufnr].eos_molten_initialized then
-      cb(true)
-      return
-    end
     if not colab_init_remote_buffer(bufnr, info) then
       vim.notify("Remote kernel init failed.", vim.log.levels.WARN)
       colab_set_status("colab: local")
       cb(false)
       return
     end
+    colab_refresh_winbar()
     colab_mark_activity()
     vim.notify("Notebook kernel: Colab (" .. (info.SESSION or "gpu") .. ").", vim.log.levels.INFO)
     cb(true)
@@ -1985,8 +2004,20 @@ return {
       vim.api.nvim_create_autocmd("User", {
         pattern = "MoltenKernelReady",
         callback = function(args)
-          local bufnr = args.buf ~= 0 and args.buf or vim.api.nvim_get_current_buf()
-          flush_pending_molten_evaluations(bufnr)
+          local seen = {}
+          local function flush(bufnr)
+            if bufnr and bufnr ~= 0 and not seen[bufnr] and vim.api.nvim_buf_is_valid(bufnr) then
+              seen[bufnr] = true
+              flush_pending_molten_evaluations(bufnr)
+            end
+          end
+          flush(args.buf)
+          flush(vim.api.nvim_get_current_buf())
+          for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+            if vim.b[bufnr].eos_molten_ready == false or pending_molten_evaluations[bufnr] then
+              flush(bufnr)
+            end
+          end
         end,
       })
 
