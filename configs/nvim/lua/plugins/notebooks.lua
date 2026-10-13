@@ -1976,9 +1976,19 @@ return {
       vim.api.nvim_create_autocmd("VimLeavePre", {
         group = colab_group,
         callback = function()
-          if vim.g.eos_colab_connected ~= nil then
-            colab_stop_sync()
+          if vim.g.eos_colab_connected == nil then
+            return
           end
+          -- The forward is shared machine-wide: only stop it when no other
+          -- nvim is still running, otherwise quitting one window kills
+          -- Colab kernels for every other open nvim.
+          local siblings = vim.fn.system({ "pgrep", "-x", "nvim" })
+          for pid in (siblings or ""):gmatch("%d+") do
+            if tonumber(pid) ~= vim.fn.getpid() then
+              return
+            end
+          end
+          colab_stop_sync()
         end,
       })
       vim.api.nvim_create_user_command("NotebookRenderCells", function()
