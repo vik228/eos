@@ -2,6 +2,10 @@
 # Delegates to the real google-colab-cli, found by location instead of PATH:
 # nvim and other minimal environments often lack ~/Library/Python/*/bin and
 # may resolve a python3 whose site-packages do not have colab_cli.
+#
+# The winner is exec'd AFTER the search loops: exec inside
+# `while read ... done < <(...)` would inherit the loop's stdin (the search
+# pipe at EOF) instead of our own stdin, which breaks --proxy-mode bridging.
 set -euo pipefail
 
 maybe_arch() {
@@ -16,29 +20,43 @@ if [[ -n "${EOS_COLAB_BIN:-}" ]]; then
 fi
 
 self="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/colab"
+pick=""
 
 # 1. Entry points under per-version user site dirs, newest python first.
 while IFS= read -r candidate; do
-  [[ -x "$candidate" && "$candidate" != "$self" ]] || continue
-  maybe_arch "$candidate" "$@"
+  if [[ -x "$candidate" && "$candidate" != "$self" ]]; then
+    pick="$candidate"
+    break
+  fi
 done < <(ls -d "$HOME"/Library/Python/*/bin/colab 2>/dev/null | sort -Vr)
 
 # 2. Anything else on PATH that is not this shim.
-while IFS= read -r candidate; do
-  [[ -x "$candidate" && "$candidate" != "$self" ]] || continue
-  maybe_arch "$candidate" "$@"
-done < <(type -aP colab 2>/dev/null || true)
+if [[ -z "$pick" ]]; then
+  while IFS= read -r candidate; do
+    if [[ -x "$candidate" && "$candidate" != "$self" ]]; then
+      pick="$candidate"
+      break
+    fi
+  done < <(type -aP colab 2>/dev/null || true)
+fi
+
+if [[ -n "$pick" ]]; then
+  maybe_arch "$pick" "$@"
+fi
 
 # 3. A python3 on PATH whose site-packages actually have the module.
 while IFS= read -r python; do
   [[ -n "$python" ]] || continue
-  if "$python" -c "import colab_cli.cli" 2>/dev/null; then
-    if [[ "$(uname -s)" == Darwin && "$(uname -m)" == arm64 ]]; then
-      exec /usr/bin/arch -arm64 "$python" -m colab_cli.cli "$@"
-    fi
-    exec "$python" -m colab_cli.cli "$@"
+  if "$python" -c "import colab_cli.cli" </dev/null 2>/dev/null; then
+    pick="$python -m colab_cli.cli"
+    break
   fi
 done < <({ type -aP python3 2>/dev/null; printf '%s\n' /usr/local/bin/python3 /opt/homebrew/bin/python3; } | awk '!seen[$0]++ && NF')
+
+if [[ -n "$pick" && "$pick" != "$self" ]]; then
+  # shellcheck disable=SC2086
+  maybe_arch $pick "$@"
+fi
 
 echo "google-colab-cli is not installed. Run scripts/setup-colab." >&2
 exit 127
