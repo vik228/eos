@@ -1173,6 +1173,10 @@ end
 -- would restart the server with a new token and break the others).
 local colab_connect_queue = nil
 
+-- Forward declaration: colab_use_remote calls this on success, but the
+-- definition lives further below. Without this, Lua resolves a global nil.
+local colab_probe_drive
+
 local function colab_ensure_forward(create, cb)
   cb = cb or function() end
   if colab_connect_queue ~= nil then
@@ -1339,6 +1343,7 @@ local function colab_use_remote(bufnr, create, cb)
       return
     end
     colab_refresh_winbar()
+    colab_probe_drive()
     colab_mark_activity()
     vim.notify("Notebook kernel: Colab (" .. (info.SESSION or "gpu") .. ").", vim.log.levels.INFO)
     cb(true)
@@ -1364,7 +1369,13 @@ local function colab_toggle()
 end
 
 local function colab_stop_sync()
-  vim.fn.system({ colab_script("colab-stop") })
+  return vim.fn.system({ colab_script("colab-stop") })
+end
+
+-- colab-stop leaves a busy kernel running and says so. Callers must honor
+-- that verdict: deinit on our side would DELETE the running kernel anyway.
+local function colab_stop_protected(output)
+  return (output or ""):find("leaving the session running", 1, true) ~= nil
 end
 
 local function colab_reset_remote_buffers()
@@ -1381,7 +1392,11 @@ end
 
 local function colab_stop_now(reason)
   colab_cancel_connect("Colab connect cancelled.")
-  colab_stop_sync()
+  local output = colab_stop_sync()
+  if colab_stop_protected(output) then
+    vim.notify("Colab kernel is busy: stop deferred, training keeps running.", vim.log.levels.WARN)
+    return
+  end
   vim.g.eos_colab_connected = nil
   colab_reset_remote_buffers()
   colab_set_status("colab: off")
@@ -1403,6 +1418,41 @@ local function colab_reinit_remote_buffers(info)
   end
 end
 
+-- Drive cannot mount itself from a cell: drive.mount() needs the Colab
+-- frontend authorization flow. EOS mounts once per runtime instead; cells
+-- then use /content/drive/MyDrive directly.
+colab_probe_drive = function()
+  vim.system({ colab_script("colab-drive"), "status" }, { text = true }, function(proc)
+    vim.schedule(function()
+      if proc.code ~= 0 then
+        vim.notify("Drive is not mounted on the Colab VM. :ColabDrive mounts it (browser consent).", vim.log.levels.WARN)
+      end
+    end)
+  end)
+end
+
+local function colab_drive_mount()
+  if vim.g.eos_colab_connected == nil then
+    vim.notify("Connect first: :ColabConnect, then :ColabDrive.", vim.log.levels.WARN)
+    return
+  end
+  vim.cmd("botright 12split")
+  local jobid = vim.fn.termopen({ colab_script("colab-drive"), "mount" }, {
+    on_exit = function(_, code)
+      vim.schedule(function()
+        if code == 0 then
+          vim.notify("Drive mounted at /content/drive. Cells can use /content/drive/MyDrive.", vim.log.levels.INFO)
+        else
+          vim.notify("Drive mount did not complete (see terminal). :ColabDrive retries.", vim.log.levels.WARN)
+        end
+      end)
+    end,
+  })
+  if jobid <= 0 then
+    vim.notify("Could not open a terminal for Drive mount.", vim.log.levels.WARN)
+  end
+end
+
 local function colab_mark_all_local(reason)
   vim.g.eos_colab_connected = nil
   colab_reset_remote_buffers()
@@ -1421,6 +1471,19 @@ local function colab_probe_forward(port, token, cb)
   end)
 end
 
+-- True when any remote kernel reports busy. A training cell started 16
+-- minutes ago is not idle: stopping or deiniting now would kill it.
+local function colab_remote_busy(port, token, cb)
+  vim.system({
+    "curl", "-fsS", "--max-time", "8",
+    "http://127.0.0.1:" .. port .. "/api/kernels?token=" .. token,
+  }, { text = true }, function(proc)
+    vim.schedule(function()
+      cb(proc.code == 0 and (proc.stdout or ""):find('"busy"', 1, true) ~= nil)
+    end)
+  end)
+end
+
 local function colab_idle_check()
   local conn = vim.g.eos_colab_connected
   if conn == nil then
@@ -1432,9 +1495,26 @@ local function colab_idle_check()
   end
   local last = vim.g.eos_colab_last_remote_run or conn.at or os.time()
   if os.time() - last >= idle_minutes * 60 then
-    colab_stop_now("Colab stopped after " .. idle_minutes .. " idle minutes. :ColabConnect to resume on GPU.")
+    if conn.port == nil or conn.token == nil then
+      return
+    end
+    -- Busy kernels survive: true idle starts after completion. Refresh the
+    -- timestamp so the countdown restarts when the kernel goes idle.
+    colab_remote_busy(conn.port, conn.token, function(busy)
+      if busy then
+        vim.g.eos_colab_last_remote_run = os.time()
+        if not vim.g.eos_colab_busy_notified then
+          vim.g.eos_colab_busy_notified = true
+          vim.notify("Colab kernel is busy: idle stop deferred.", vim.log.levels.INFO)
+        end
+        return
+      end
+      vim.g.eos_colab_busy_notified = nil
+      colab_stop_now("Colab stopped after " .. idle_minutes .. " idle minutes. :ColabConnect to resume on GPU.")
+    end)
     return
   end
+  vim.g.eos_colab_busy_notified = nil
   if conn.port == nil or conn.token == nil then
     return
   end
@@ -1931,6 +2011,7 @@ return {
       vim.api.nvim_create_user_command("ColabStop", function()
         colab_stop_now("Colab stopped. Notebook cells will run locally until :ColabConnect.")
       end, {})
+      vim.api.nvim_create_user_command("ColabDrive", colab_drive_mount, {})
       -- Data convention: the first code cell containing a `# eos-data`
       -- comment line declares the notebook's datasets. :ColabData runs it
       -- on the current kernel (local or Colab), so data lands where compute
