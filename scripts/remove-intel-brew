@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Remove the dead Intel Homebrew tree (macOS 27 has no Rosetta).
+# Dry-run by default; pass --execute to act. Review /tmp/intel-manifest.txt.
+# Preserves: /usr/local/var, /usr/local/etc, Caskroom, node_modules,
+# user files (clickhouse, thor), python.org framework links, PAM module.
+set -euo pipefail
+
+MANIFEST="${EOS_INTEL_MANIFEST:-/tmp/intel-manifest.txt}"
+EXECUTE=0
+[[ "${1:-}" == "--execute" ]] || {
+  echo "dry-run: pass --execute to delete"
+  echo "manifest: $MANIFEST"
+  exit 0
+}
+
+[[ -f "$MANIFEST" ]] || { echo "manifest missing: $MANIFEST" >&2; exit 2; }
+
+# Every LINK entry must still resolve under a removed tree, or abort.
+while IFS= read -r line; do
+  [[ "$line" == LINK:* ]] || continue
+  link="${line#LINK:}"
+  link="${link%% -> *}"
+  target="$(readlink "$link")"
+  case "$target" in
+    ../Cellar/*|../Caskroom/*|../Homebrew/*|/usr/local/Cellar/*|/usr/local/Caskroom/*|/usr/local/Homebrew/*|/usr/local/opt/*) ;;
+    *) echo "refusing unexpected link target: $link -> $target" >&2; exit 2 ;;
+  esac
+  rm -f "$link"
+done <"$MANIFEST"
+
+for dir in /usr/local/Homebrew /usr/local/Cellar /usr/local/Frameworks; do
+  [[ -e "$dir" ]] || continue
+  rm -rf "$dir"
+done
+rmdir /usr/local/opt 2>/dev/null || true
+
+# Intel site-packages with no ARM consumer (node_modules stays).
+for dir in /usr/local/lib/python3.9 /usr/local/lib/python3.12; do
+  [[ -d "$dir" ]] || continue
+  rm -rf "$dir"
+done
+
+echo "intel tree removed; launchd plists still need: "
+echo "  sudo rm /Library/LaunchDaemons/homebrew.mxcl.postgresql@17.plist /Library/LaunchDaemons/postgresql-17.plist"

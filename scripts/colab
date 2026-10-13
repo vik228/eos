@@ -1,40 +1,44 @@
 #!/usr/bin/env bash
-# arch-aware delegation to the real google-colab-cli. The stock entry point
-# breaks under a Rosetta (x86_64) python because its cryptography wheel is
-# arm64; forcing the arm64 slice on Apple Silicon fixes the import.
+# Delegates to the real google-colab-cli, found by location instead of PATH:
+# nvim and other minimal environments often lack ~/Library/Python/*/bin and
+# may resolve a python3 whose site-packages do not have colab_cli.
 set -euo pipefail
 
-real_colab() {
-  local dir candidate self
-  self="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/colab"
-  IFS=: read -r -a dirs <<<"$PATH"
-  for dir in "${dirs[@]}"; do
-    candidate="$dir/colab"
-    [[ -x "$candidate" && ! -d "$candidate" ]] || continue
-    [[ "$(cd "$(dirname "$candidate")" && pwd -P)/colab" == "$self" ]] && continue
-    printf '%s\n' "$candidate"
-    return 0
-  done
-  return 1
+maybe_arch() {
+  if [[ "$(uname -s)" == Darwin && "$(uname -m)" == arm64 ]]; then
+    set -- /usr/bin/arch -arm64 "$@"
+  fi
+  exec "$@"
 }
 
 if [[ -n "${EOS_COLAB_BIN:-}" ]]; then
   exec "$EOS_COLAB_BIN" "$@"
 fi
 
-if bin="$(real_colab)"; then
-  if [[ "$(uname -s)" == Darwin && "$(uname -m)" == arm64 ]]; then
-    exec /usr/bin/arch -arm64 "$bin" "$@"
-  fi
-  exec "$bin" "$@"
-fi
+self="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/colab"
 
-if python3 -c "import colab_cli.cli" 2>/dev/null; then
-  if [[ "$(uname -s)" == Darwin && "$(uname -m)" == arm64 ]]; then
-    exec /usr/bin/arch -arm64 python3 -m colab_cli.cli "$@"
+# 1. Entry points under per-version user site dirs, newest python first.
+while IFS= read -r candidate; do
+  [[ -x "$candidate" && "$candidate" != "$self" ]] || continue
+  maybe_arch "$candidate" "$@"
+done < <(ls -d "$HOME"/Library/Python/*/bin/colab 2>/dev/null | sort -Vr)
+
+# 2. Anything else on PATH that is not this shim.
+while IFS= read -r candidate; do
+  [[ -x "$candidate" && "$candidate" != "$self" ]] || continue
+  maybe_arch "$candidate" "$@"
+done < <(type -aP colab 2>/dev/null || true)
+
+# 3. A python3 on PATH whose site-packages actually have the module.
+while IFS= read -r python; do
+  [[ -n "$python" ]] || continue
+  if "$python" -c "import colab_cli.cli" 2>/dev/null; then
+    if [[ "$(uname -s)" == Darwin && "$(uname -m)" == arm64 ]]; then
+      exec /usr/bin/arch -arm64 "$python" -m colab_cli.cli "$@"
+    fi
+    exec "$python" -m colab_cli.cli "$@"
   fi
-  exec python3 -m colab_cli.cli "$@"
-fi
+done < <({ type -aP python3 2>/dev/null; printf '%s\n' /usr/local/bin/python3 /opt/homebrew/bin/python3; } | awk '!seen[$0]++ && NF')
 
 echo "google-colab-cli is not installed. Run scripts/setup-colab." >&2
 exit 127

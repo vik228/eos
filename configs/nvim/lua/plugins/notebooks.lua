@@ -1017,6 +1017,24 @@ local function molten_command_available(command)
   return vim.fn.exists(":" .. command) == 2
 end
 
+-- The molten host is a separate Python process. If it segfaults (native
+-- imaging/zmq heap corruption surfacing in GC), every molten call fails with
+-- an invalid-channel error while files stay safe. Normal Colab never shows
+-- this because its UI and kernel are separate processes that restart
+-- independently. Detect the dead host and say so plainly instead of
+-- surfacing cryptic channel errors.
+local function molten_host_dead(err)
+  return tostring(err):find("nvalid channel", 1, true) ~= nil
+end
+
+local function molten_notify_error(err)
+  if molten_host_dead(err) then
+    vim.notify("Molten host crashed. Restart nvim to continue (files are autosaved).", vim.log.levels.ERROR)
+  else
+    vim.notify("Molten inline execution failed: " .. tostring(err), vim.log.levels.WARN)
+  end
+end
+
 local pending_molten_evaluations = {}
 
 local function evaluate_molten_range(bufnr, start_line, end_line)
@@ -1036,7 +1054,7 @@ local function flush_pending_molten_evaluations(bufnr)
   for _, range in ipairs(pending) do
     local ok, err = evaluate_molten_range(bufnr, range.start_line, range.end_line)
     if not ok then
-      vim.notify("Molten inline execution failed: " .. tostring(err), vim.log.levels.WARN)
+      molten_notify_error(err)
     end
   end
 end
@@ -1044,9 +1062,9 @@ end
 local function molten_init_local()
   local kernel_name = notebook_kernel_name()
   vim.b.eos_molten_ready = false
-  local ok = pcall(vim.cmd, "MoltenInit " .. kernel_name)
+  local ok, err = pcall(vim.cmd, "MoltenInit " .. kernel_name)
   if not ok then
-    ok = pcall(vim.cmd, "MoltenInit")
+    ok, err = pcall(vim.cmd, "MoltenInit")
   end
 
   if ok then
@@ -1056,7 +1074,11 @@ local function molten_init_local()
   end
 
   vim.b.eos_molten_ready = nil
-  vim.notify("Could not initialize a Jupyter kernel for Molten.", vim.log.levels.WARN)
+  if not molten_host_dead(err) then
+    vim.notify("Could not initialize a Jupyter kernel for Molten.", vim.log.levels.WARN)
+  else
+    molten_notify_error(err)
+  end
   return false
 end
 
@@ -1239,6 +1261,9 @@ local function colab_cancel_connect(reason)
 end
 
 local function colab_init_remote_buffer(bufnr, info)
+  if vim.b[bufnr].eos_molten_initialized then
+    return true
+  end
   local url = "http://127.0.0.1:" .. info.LOCAL_PORT .. "?token=" .. info.TOKEN
   local ok = false
   vim.api.nvim_buf_call(bufnr, function()
@@ -1261,7 +1286,20 @@ local function colab_use_remote(bufnr, create, cb)
     return
   end
 
+  -- A second run while one is in flight shares it: its cells are already
+  -- queued and flush when the first attempt finishes. Without this, every
+  -- press creates another kernel object and the next evaluate stops at a
+  -- "Please select a kernel" prompt.
+  if vim.api.nvim_buf_is_valid(bufnr) and vim.b[bufnr].eos_colab_connecting then
+    return true
+  end
+  if vim.api.nvim_buf_is_valid(bufnr) then
+    vim.b[bufnr].eos_colab_connecting = true
+  end
   colab_ensure_forward(create, function(info, err, level)
+    if vim.api.nvim_buf_is_valid(bufnr) then
+      vim.b[bufnr].eos_colab_connecting = nil
+    end
     if info == nil then
       vim.notify(err or "Colab connect failed.", level or vim.log.levels.WARN)
       colab_set_status("colab: local")
@@ -1270,6 +1308,10 @@ local function colab_use_remote(bufnr, create, cb)
     end
     if not vim.api.nvim_buf_is_valid(bufnr) then
       cb(false)
+      return
+    end
+    if vim.b[bufnr].eos_molten_initialized then
+      cb(true)
       return
     end
     if not colab_init_remote_buffer(bufnr, info) then
@@ -1469,7 +1511,7 @@ local function evaluate_range_inline(start_line, end_line)
 
   local ok, err = evaluate_molten_range(bufnr, start_line, end_line)
   if not ok then
-    vim.notify("Molten inline execution failed: " .. tostring(err), vim.log.levels.WARN)
+    molten_notify_error(err)
     return false
   end
 
