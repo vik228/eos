@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# Stop the local Colab port forward. Stops the runtime too when this machine
+# created it (state file) or when --rm is passed. Never touches a kernel that
+# reports busy: a training job outlives the stop request.
+set -euo pipefail
+
+ROOT="${EOS_ROOT:-$HOME/personal/eos}"
+source "$ROOT/scripts/lib-eos-config.sh"
+SESSION="${EOS_COLAB_SESSION:-eos}"
+LOCAL_PORT="${EOS_COLAB_LOCAL_PORT:-18989}"
+REMOTE_PORT="${EOS_COLAB_REMOTE_PORT:-18888}"
+STATE_DIR="${EOS_STATE_DIR:-$HOME/.local/state/eos}/colab"
+STATE="$STATE_DIR/forward.env"
+RM=0
+
+for arg in "$@"; do
+  case "$arg" in
+    --rm) RM=1 ;;
+    -h|--help) sed -n '2,5p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "colab-stop: unknown option: $arg" >&2; exit 2 ;;
+  esac
+done
+
+COLAB_BIN="${EOS_COLAB_BIN:-$ROOT/scripts/colab}"
+SPEC="-L $LOCAL_PORT:127.0.0.1:$REMOTE_PORT"
+
+kill_forward() {
+  local pid="$1" cmdline
+  [[ -n "$pid" ]] || return 0
+  cmdline="$(ps -o command= -p "$pid" 2>/dev/null || true)"
+  if [[ -n "$cmdline" && "$cmdline" == *"$SPEC"* ]]; then
+    kill "$pid" 2>/dev/null || true
+  fi
+}
+
+# Prints busy|idle|unknown for the forwarded server. Unknown (curl failed)
+# must never read as idle: a dropped link with training on the VM is the
+# case that kills work.
+kernel_state() {
+  local token="$1" states
+  [[ -n "$token" ]] || { printf 'unknown'; return 0; }
+  states="$(curl -fsS --max-time 10 "http://127.0.0.1:$LOCAL_PORT/api/kernels?token=$token" 2>/dev/null || true)"
+  [[ -n "$states" ]] || { printf 'unknown'; return 0; }
+  if printf '%s' "$states" | grep -q '"execution_state"[[:space:]]*:[[:space:]]*"busy"'; then
+    printf 'busy'
+  else
+    printf 'idle'
+  fi
+}
+
+kernel_busy() {
+  [[ "$(kernel_state "$1")" == "busy" ]]
+}
+
+created=0
+token=""
+if [[ -f "$STATE" ]]; then
+  # shellcheck source=/dev/null
+  source "$STATE"
+  token="${STATE_TOKEN:-}"
+  case "$(kernel_state "$token")" in
+    busy)
+      echo "colab-stop: kernel is busy, leaving the session running" >&2
+      exit 0
+      ;;
+    unknown)
+      echo "colab-stop: link unclear, keeping the session (state kept)" >&2
+      exit 0
+      ;;
+  esac
+  kill_forward "${STATE_PID:-}"
+  if [[ -z "${STATE_PID:-}" ]]; then
+    while IFS= read -r pid; do
+      kill_forward "$pid"
+    done < <(pgrep -f -- "$SPEC" || true)
+  fi
+  [[ "${STATE_CREATED:-0}" == 1 ]] && created=1
+  rm -f "$STATE"
+else
+  while IFS= read -r pid; do
+    kill_forward "$pid"
+  done < <(pgrep -f -- "$SPEC" || true)
+fi
+
+if [[ "$RM" == 1 || "$created" == 1 ]]; then
+  "$COLAB_BIN" stop -s "$SESSION" >/dev/null 2>&1 || true
+  echo "colab-stop: forward stopped, session '$SESSION' stopped"
+else
+  echo "colab-stop: forward stopped, session '$SESSION' kept (use --rm to stop it)"
+fi

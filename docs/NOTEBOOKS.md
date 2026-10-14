@@ -52,6 +52,7 @@ The fallback REPL opens in a bottom split with a visible `PYTHON REPL` header an
 | Key | Action |
 | --- | --- |
 | `<leader>ji` | initialize inline Jupyter kernel |
+| `<leader>jG` | toggle Colab GPU kernel for this buffer |
 | `<leader>jr` | run current `# %%` cell inline |
 | `Shift+Enter` | run current cell inline and jump to the next cell |
 | `<leader>ja` | run all cells inline |
@@ -96,7 +97,63 @@ Commands are also available:
 :NotebookOpenOutput
 :NotebookResetSession
 :NotebookRenderCells
+:ColabConnect
+:ColabStop
+:ColabStatus
+:ColabData
 ```
+
+### Notebook data on Colab
+
+Notebook files stay local; only cell code runs remotely. So datasets must
+exist on the runtime. Convention: a code cell containing a `# eos-data`
+comment line declares them - download when missing, reuse when present, and
+detect Colab with `import google.colab` so the same cell works on the Mac.
+`:ColabData` runs that cell on the current kernel. Example:
+
+```python
+# eos-data: <NAME>
+import os
+try:
+    import google.colab
+    DATA_DIR = "/root/colab-data"
+    DATA_PATH = os.path.join(DATA_DIR, "<file>")
+    if not os.path.exists(DATA_PATH):
+        import urllib.request
+        os.makedirs(DATA_DIR, exist_ok=True)
+        urllib.request.urlretrieve("<https://.../file>", DATA_PATH + ".tmp")
+        os.rename(DATA_PATH + ".tmp", DATA_PATH)
+except ImportError:
+    DATA_PATH = "data/<file>"
+```
+(For archives, download plus extract instead of rename; see the GloVe
+notebook's data cell for a zip example.)
+
+Large or private datasets belong on Drive or GCS, not in per-save sync. Every
+new notebook starts from a template with instructions, a data skeleton, and
+an empty code cell; fill in the data URL and press `:ColabData`.
+
+## Colab GPU Kernels
+
+nvim stays local; only the kernel can move to Colab (see ADR 0007). Setup once:
+
+```bash
+scripts/setup-colab
+```
+
+Then in your terminal approve auth when asked (`colab sessions` triggers the
+browser flow). In a notebook, `<leader>jG` connects and runs cells on the GPU;
+press it again to go back local. The first cell run uses Colab automatically
+when a session is reachable, otherwise it stays local with a notice - the
+choice sticks for the buffer session. Only one connect runs at a time;
+parallel runs queue behind it. `:ColabStatus` shows link and usage,
+`:ColabConnect` starts a session explicitly, `:ColabStop` ends it. Idle
+sessions stop after `EOS_COLAB_IDLE_MINUTES` (default 15), but never while the
+kernel reports busy. A reconnected runtime is a fresh kernel, so re-run cells.
+`vim.g.eos_colab_status` holds `colab: off|local|<session>` for statuslines.
+Keys live in `.eos.local` as `EOS_COLAB_SESSION`, `EOS_COLAB_GPU`,
+`EOS_COLAB_AUTO`, `EOS_COLAB_IDLE_MINUTES`, `EOS_COLAB_LOCAL_PORT`, and
+`EOS_COLAB_REMOTE_PORT`.
 
 Save with `:w`; Jupytext writes the edited text back into the `.ipynb` file. Molten outputs are live Neovim state, so use `<leader>je` when you want to export current outputs back into the `.ipynb`. Use `<leader>jE` to import saved notebook outputs into Molten.
 

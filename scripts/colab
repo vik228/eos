@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# Delegates to the real google-colab-cli, found by location instead of PATH:
+# nvim and other minimal environments often lack ~/Library/Python/*/bin and
+# may resolve a python3 whose site-packages do not have colab_cli.
+#
+# The winner is exec'd AFTER the search loops: exec inside
+# `while read ... done < <(...)` would inherit the loop's stdin (the search
+# pipe at EOF) instead of our own stdin, which breaks --proxy-mode bridging.
+# Candidates are canonicalized before self-comparison so a symlinked PATH
+# entry can never select this shim again (infinite self-exec). A depth guard
+# stops any unforeseen re-exec cycle.
+set -euo pipefail
+
+depth="${EOS_COLAB_SHIM_DEPTH:-0}"
+if [[ "$depth" -ge 3 ]]; then
+  echo "colab shim: re-exec loop detected" >&2
+  exit 1
+fi
+export EOS_COLAB_SHIM_DEPTH=$((depth + 1))
+
+if [[ -n "${EOS_COLAB_BIN:-}" ]]; then
+  exec "$EOS_COLAB_BIN" "$@"
+fi
+
+self="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/colab"
+
+arch_prefix=()
+if [[ "$(uname -s)" == Darwin && "$(uname -m)" == arm64 ]]; then
+  arch_prefix=(/usr/bin/arch -arm64)
+fi
+
+# Same file (follows symlinks): device+inode comparison, so neither a
+# symlinked directory nor a symlinked file can re-select this shim.
+same_file() {
+  local a b
+  if a="$(stat -f '%d %i' "$1" 2>/dev/null)" && b="$(stat -f '%d %i' "$self" 2>/dev/null)"; then
+    [[ "$a" == "$b" ]]
+  elif a="$(stat -c '%d %i' "$1" 2>/dev/null)" && b="$(stat -c '%d %i' "$self" 2>/dev/null)"; then
+    [[ "$a" == "$b" ]]
+  else
+    return 1
+  fi
+}
+
+is_self() {
+  same_file "$1"
+}
+
+# Entry point whose interpreter still exists. A stale user-site script
+# (shebang pointing at a deleted python) must not win over later steps:
+# exec would fail with 126 and never fall through. Handles `#! /path`,
+# CRLF, and `#!/usr/bin/env name` (resolved via PATH).
+runnable_entry() {
+  local first interp name
+  [[ -x "$1" ]] || return 1
+  if IFS= read -r first <"$1" 2>/dev/null && [[ "$first" == '#!'* ]]; then
+    interp="${first:2}"
+    interp="${interp%$'\r'}"
+    interp="${interp#"${interp%%[![:space:]]*}"}"
+    interp="${interp%% *}"
+    if [[ "$(basename "$interp")" == "env" ]]; then
+      name="${first:2}"
+      name="${name%$'\r'}"
+      name="${name#*env }"
+      name="${name%% *}"
+      [[ -n "$name" ]] || return 1
+      interp="$(command -v "$name" 2>/dev/null || true)"
+      [[ -n "$interp" ]] || return 1
+    fi
+    [[ -x "$interp" ]] || return 1
+  fi
+  return 0
+}
+
+pick=""
+
+# 1. Entry points under per-version user site dirs, newest python first.
+while IFS= read -r candidate; do
+  if runnable_entry "$candidate" && ! is_self "$candidate"; then
+    pick="$candidate"
+    break
+  fi
+done < <(ls -d "$HOME"/Library/Python/*/bin/colab 2>/dev/null | sort -Vr)
+
+# 2. Anything else on PATH that is not this shim.
+if [[ -z "$pick" ]]; then
+  while IFS= read -r candidate; do
+    if runnable_entry "$candidate" && ! is_self "$candidate"; then
+      pick="$candidate"
+      break
+    fi
+  done < <(type -aP colab 2>/dev/null || true)
+fi
+
+if [[ -n "$pick" ]]; then
+  # shellcheck disable=SC2086
+  exec ${arch_prefix[@]+"${arch_prefix[@]}"} "$pick" "$@"
+fi
+
+# 3. A python3 on PATH whose site-packages actually have the module.
+pick_python=""
+while IFS= read -r python; do
+  [[ -n "$python" ]] || continue
+  if "$python" -c "import colab_cli.cli" </dev/null 2>/dev/null; then
+    pick_python="$python"
+    break
+  fi
+done < <({ type -aP python3 2>/dev/null; printf '%s\n' /usr/local/bin/python3 /opt/homebrew/bin/python3; } | awk '!seen[$0]++ && NF')
+
+if [[ -n "$pick_python" ]]; then
+  # shellcheck disable=SC2086
+  exec ${arch_prefix[@]+"${arch_prefix[@]}"} "$pick_python" -m colab_cli.cli "$@"
+fi
+
+echo "google-colab-cli is not installed. Run scripts/setup-colab." >&2
+exit 127

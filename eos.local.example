@@ -30,3 +30,13 @@
 # Optional TypeSafe Jev keys for kb search/context --jev (empty disables Jev).
 : "${TYPESAFE_API_KEY_WORK:=}"
 : "${TYPESAFE_API_KEY_PERSONAL:=}"
+
+# Optional Colab GPU kernels for nvim notebooks (scripts/setup-colab first).
+: "${EOS_COLAB_SESSION:=eos}"
+: "${EOS_COLAB_GPU:=T4}"
+: "${EOS_COLAB_IDENTITY:=$HOME/.ssh/eos_colab_ed25519}"
+: "${EOS_COLAB_HIGH_MEM:=0}"
+: "${EOS_COLAB_AUTO:=1}"
+: "${EOS_COLAB_IDLE_MINUTES:=15}"
+: "${EOS_COLAB_LOCAL_PORT:=18989}"
+: "${EOS_COLAB_REMOTE_PORT:=18888}"

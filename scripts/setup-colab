@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# One-time Colab setup for EOS notebooks: CLI, SSH key, and ssh config entry.
+# Authentication itself needs a browser and is verified, not performed, here.
+set -euo pipefail
+
+ROOT="${EOS_ROOT:-$HOME/personal/eos}"
+source "$ROOT/scripts/lib-eos-config.sh"
+MIN_VERSION="0.7.2"
+COLAB_BIN="${EOS_COLAB_BIN:-$ROOT/scripts/colab}"
+
+say() { printf '%s\n' "$*"; }
+fail() { echo "setup-colab: $*" >&2; exit 1; }
+
+version_ge() {
+  python3 - "$1" "$2" <<'PY'
+import sys
+def parts(v):
+    return [int(x) for x in v.split(".")]
+sys.exit(0 if parts(sys.argv[1]) >= parts(sys.argv[2]) else 1)
+PY
+}
+
+# 1. CLI present and new enough (scripts/colab handles arch selection).
+if ! "$COLAB_BIN" --help >/dev/null 2>&1; then
+  say "installing google-colab-cli..."
+  python3 -m pip install --user google-colab-cli || fail "pip install failed"
+fi
+cli_version="$("$COLAB_BIN" version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)"
+if [[ -z "$cli_version" ]]; then
+  fail "could not determine the CLI version; reinstall with: python3 -m pip install --user -U google-colab-cli"
+fi
+if ! version_ge "$cli_version" "$MIN_VERSION"; then
+  fail "google-colab-cli $cli_version is older than $MIN_VERSION; upgrade with: python3 -m pip install --user -U google-colab-cli"
+fi
+say "cli ok ($cli_version)"
+
+ssh_dir="$HOME/.ssh"
+mkdir -p "$ssh_dir"
+chmod 700 "$ssh_dir"
+
+# 2. SSH key (Colab rejects RSA). Prefer an existing default key; otherwise
+# generate a dedicated one so the user default never gains new exposure.
+IDENTITY=""
+for candidate in "$HOME/.ssh/id_ed25519" "$HOME/.ssh/id_ecdsa" "$HOME/.ssh/eos_colab_ed25519"; do
+  if [[ -f "$candidate" ]]; then
+    IDENTITY="$candidate"
+    break
+  fi
+done
+if [[ -z "$IDENTITY" ]]; then
+  IDENTITY="$HOME/.ssh/eos_colab_ed25519"
+  say "generating $IDENTITY (no passphrase, for non-interactive ProxyCommand)..."
+  ssh-keygen -t ed25519 -f "$IDENTITY" -N "" -C "eos-colab" || fail "ssh-keygen failed"
+else
+  say "ssh key ok ($IDENTITY)"
+fi
+
+# 3. Managed ssh Include block with backup, user config untouched otherwise.
+managed="$ssh_dir/eos-colab.conf"
+# Always route through the EOS shim (never an override): arch selection lives
+# there, so the entry works on any machine layout.
+colab_bin="$ROOT/scripts/colab"
+cat >"$managed" <<EOF
+# Managed by EOS scripts/setup-colab. Machine-specific values live in .eos.local.
+# For interactive use (ssh colab); scripts pass the same options explicitly.
+Host colab
+  HostName colab
+  User root
+  IdentityFile $IDENTITY
+  IdentitiesOnly yes
+  ProxyCommand $colab_bin ssh --proxy-mode -s \${EOS_COLAB_SESSION:-eos} -i $IDENTITY
+  StrictHostKeyChecking no
+  UserKnownHostsFile /dev/null
+EOF
+chmod 600 "$managed"
+config="$ssh_dir/config"
+if [[ -L "$config" ]]; then
+  say "ssh config is a symlink ($config); add this line to its source yourself:"
+  say "  Include ~/.ssh/eos-colab.conf"
+elif [[ ! -e "$config" ]]; then
+  printf 'Include ~/.ssh/eos-colab.conf\n' >"$config"
+  chmod 600 "$config"
+  say "ssh config created"
+elif ! grep -q "Include.*eos-colab.conf" "$config" 2>/dev/null; then
+  backup="$config.eos-backup-$(date +%Y%m%d-%H%M%S)"
+  cp "$config" "$backup"
+  { printf 'Include ~/.ssh/eos-colab.conf\n'; cat "$backup"; } >"$config"
+  say "ssh config updated (backup: $backup)"
+else
+  say "ssh config ok"
+fi
+
+# 4. Auth check only: a browser flow cannot complete here.
+if "$COLAB_BIN" sessions >/dev/null 2>&1; then
+  say "auth ok"
+else
+  say "not authenticated yet. In your terminal run:"
+  say "  colab sessions"
+  say "and approve the browser prompt with your Pro account."
+fi
+
+say "setup-colab done"

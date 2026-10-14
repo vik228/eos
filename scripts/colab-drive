@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Mount Google Drive inside a Colab runtime, or report mount status.
+# drive.mount() from notebook cells cannot complete without the Colab
+# frontend authorization flow, so EOS mounts once per runtime instead:
+# cells then use /content/drive/MyDrive directly.
+#
+#   colab-drive mount   # interactive: needs browser consent
+#   colab-drive status  # exit 0 mounted, 1 not, 2 on error
+# The session comes from EOS_COLAB_SESSION; there is no --session flag.
+set -euo pipefail
+
+ROOT="${EOS_ROOT:-$HOME/personal/eos}"
+SESSION="${EOS_COLAB_SESSION:-eos}"
+MOUNT_PATH="/content/drive"
+CMD="status"
+
+for arg in "$@"; do
+  case "$arg" in
+    mount|status) CMD="$arg" ;;
+    -s|--session) echo "colab-drive: use EOS_COLAB_SESSION env instead of $arg" >&2; exit 2 ;;
+    -h|--help) sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "colab-drive: unknown option: $arg" >&2; exit 2 ;;
+  esac
+done
+
+COLAB_BIN="${EOS_COLAB_BIN:-$ROOT/scripts/colab}"
+
+if [[ "$CMD" == "mount" ]]; then
+  if [[ ! -t 0 ]]; then
+    echo "colab-drive: mount needs an interactive terminal (browser consent)." >&2
+    echo "colab-drive: run from a terminal, or :ColabDrive inside nvim." >&2
+    exit 2
+  fi
+  exec "$COLAB_BIN" drivemount --session "$SESSION" "$MOUNT_PATH"
+fi
+
+# status via the control plane: no SSH bridge slot needed.
+out="$("$COLAB_BIN" exec --session "$SESSION" -f <(printf 'import os,sys\nsys.stdout.write("MOUNTED" if os.path.isdir("%s/MyDrive") else "ABSENT")\n' "$MOUNT_PATH") 2>/dev/null || true)"
+case "$out" in
+  *MOUNTED*) echo "colab-drive: Drive mounted at $MOUNT_PATH"; exit 0 ;;
+  *ABSENT*) echo "colab-drive: Drive not mounted at $MOUNT_PATH"; exit 1 ;;
+  *) echo "colab-drive: could not check mount status" >&2; exit 2 ;;
+esac

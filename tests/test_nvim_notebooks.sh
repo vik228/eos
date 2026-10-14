@@ -221,4 +221,87 @@ grep -q 'EOS_NOTEBOOK_PLOTS=MQ==' "$molten_wezterm_loader"
 grep -q 'wezterm.list_panes()' "$molten_wezterm_loader"
 grep -q 'return image_pane_id' "$molten_wezterm_loader"
 
+template="$ROOT/configs/nvim/data/notebook-template.ipynb"
+[[ -f "$template" ]] || { echo "missing notebook template: $template"; exit 1; }
+python3 -c "
+import json,sys
+nb = json.load(open('$template'))
+cells = nb['cells']
+assert any(c['cell_type'] == 'code' and any(l.startswith('# eos-data') for l in c['source']) for c in cells), 'no eos-data cell'
+assert any(c['cell_type'] == 'markdown' for c in cells), 'no instruction cell'
+assert all(c.get('id') for c in cells), 'cells need ids'
+"
+grep -q 'configs/nvim/data/notebook-template.ipynb' "$config"
+grep -q 'options.new_template = template' "$config"
+grep -q 'colab_toggle = { "<leader>jG" }' "$config"
+grep -q 'ColabData' "$config"
+grep -q 'ColabConnect' "$config"
+grep -q 'ColabDrive' "$config"
+grep -q 'ColabStop' "$config"
+grep -q 'colab_ensure_forward' "$config"
+grep -q 'colab_start_forward_run' "$config"
+grep -q 'eos_colab_status' "$config"
+# Single in-flight run: every call enqueues, create intent retried at drain.
+grep -q 'colab_connect_queue = makers' "$config"
+grep -q 'colab_start_forward_run()' "$config"
+# Skip re-init only when the drain produced the same connection.
+if grep -q 'vim.b\[bufnr\].eos_colab_connecting then' "$config" && grep -A2 'vim.b\[bufnr\].eos_colab_connecting then' "$config" | grep -q 'return true'; then
+  echo "connecting guard must not drop queued calls"
+  exit 1
+fi
+# Fan-out flushes initialized buffers only (no kernel-less evaluates).
+grep -q 'vim.b\[bufnr\].eos_molten_initialized' "$config"
+# Local fallback is buffer-scoped (async callbacks run anywhere).
+grep -q 'molten_init_local(bufnr)' "$config"
+if grep -q '[^_(]molten_init_local()' "$config"; then
+  echo "bare molten_init_local() acts on the wrong buffer"
+  exit 1
+fi
+# Winbar connecting state is per-buffer, never global.
+grep -q 'vim.b\[bufnr\].eos_colab_connecting then' "$config"
+# Heal resets ready so post-heal cells wait for the fresh kernel.
+grep -q 'vim.b.eos_molten_ready = false' "$config"
+# Busy kernels survive idle checks; stop honors the busy verdict.
+grep -q 'colab_remote_busy' "$config"
+grep -q 'leaving the session running' "$config"
+grep -q 'flush_pending_molten_evaluations(bufnr)' "$config"
+# Forward declarations precede their first use (Lua resolves locals lexically).
+probe_decl="$(grep -n '^local colab_probe_drive$' "$config" | cut -d: -f1)"
+probe_use="$(grep -n 'colab_probe_drive()' "$config" | head -1 | cut -d: -f1)"
+[[ -n "$probe_decl" && -n "$probe_use" && "$probe_decl" -lt "$probe_use" ]] || {
+  echo "colab_probe_drive must be forward-declared before use" >&2
+  exit 1
+}
+start_decl="$(grep -n '^local colab_start_forward_run$' "$config" | cut -d: -f1)"
+start_use="$(grep -n 'colab_start_forward_run()' "$config" | head -1 | cut -d: -f1)"
+[[ -n "$start_decl" && -n "$start_use" && "$start_decl" -lt "$start_use" ]] || {
+  echo "colab_start_forward_run must be forward-declared before use" >&2
+  exit 1
+}
+# Last-lease-holder stops the shared forward (no pgrep process scan).
+grep -q 'colab_hold_lease()' "$config"
+grep -q 'colab_other_lease_alive()' "$config"
+grep -q 'colab/leases' "$config"
+if grep -q 'pgrep.*-x.*nvim' "$config"; then
+  echo "forward stop must use leases, not pgrep"
+  exit 1
+fi
+# Skip re-init only for the connection the buffer was bound at init time.
+grep -q 'eos_colab_conn_key' "$config"
+grep -q 'colab_conn_key(info)' "$config"
+# Drive: probe once per connection, warn only when absent (not on errors).
+grep -q 'eos_colab_drive_probed_key' "$config"
+grep -q 'proc.code == 1 then' "$config"
+grep -q 'botright 12new' "$config"
+grep -q 'Drive mount reported success but is not visible' "$config"
+grep -q 'colab-drive' "$config"
+grep -q ':ColabDrive' "$template"
+# Busy verdict precedes cancel/reset; unknown link never reads as idle.
+grep -q 'vim.g.eos_colab_last_remote_run = nil' "$config"
+grep -q "printf 'unknown'" "$ROOT/scripts/colab-stop"
+grep -q 'link unclear, keeping the session' "$ROOT/scripts/colab-stop"
+# on_exit ignores stale jobs and empty queues.
+grep -q 'vim.g.eos_colab_job ~= exit_jobid' "$config"
+grep -q 'colab_connect_queue or {}' "$config"
+
 echo "nvim notebook config ok"

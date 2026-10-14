@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+- Added Colab GPU kernels to Neovim notebooks: Shift+Enter runs the cell on
+  Colab when a session is available (single in-flight connect with queued
+  waiters, late `--create` intent honored at drain), otherwise locally.
+  The winbar shows `kernel: colab (<session>)`, `kernel: local`, or
+  `kernel: connecting…` per buffer.
+- Added busy-aware Colab idle handling: kernels reporting busy survive idle
+  checks (true idle starts after completion) and `colab-stop`'s busy verdict
+  is honored instead of deinitializing the running kernel. Unknown link
+  state never reads as idle. Quitting Neovim still ends remote kernels
+  (molten's own ExitPre shuts them down); the busy protection covers the
+  idle timer and explicit `:ColabStop` while editing.
+- Added Drive support: `scripts/colab-drive status|mount`, `:ColabDrive`
+  (terminal split for browser consent), and a post-connect probe. Cells use
+  `/content/drive/MyDrive`; `drive.mount()` from cells is unsupported.
+- Fixed the `scripts/colab` shim swallowing stdin (broke `ssh --proxy-mode`);
+  candidates are canonicalized for self-exclusion with a re-exec depth guard,
+  stale entry points fall through, and resolution is location-based for
+  minimal environments.
+- Fixed quitting one Neovim killing the shared Colab forward: lease files
+  (one per connected nvim, stale ones pruned by pid check) decide, so only
+  the last lease holder stops it; siblings keep it alive.
+- Added `scripts/remove-intel-brew` (dry-run default, ARM + manifest guards)
+  for the macOS 27 Intel-tree cleanup.
+
 - Added the OKF-compatible shared knowledge runtime, bounded retrieval,
   freshness and coverage auditing, proposal governance, recoverable sessions,
   bug investigation gates, migration tooling, agent policy adapters, wrappers,
