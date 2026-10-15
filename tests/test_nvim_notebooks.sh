@@ -278,6 +278,30 @@ start_use="$(grep -n 'colab_start_forward_run()' "$config" | head -1 | cut -d: -
   echo "colab_start_forward_run must be forward-declared before use" >&2
   exit 1
 }
+lease_decl="$(grep -n '^local colab_hold_lease$' "$config" | cut -d: -f1)"
+lease_use="$(grep -n 'colab_hold_lease()' "$config" | head -1 | cut -d: -f1)"
+[[ -n "$lease_decl" && -n "$lease_use" && "$lease_decl" -lt "$lease_use" ]] || {
+  echo "colab_hold_lease must be forward-declared before use" >&2
+  exit 1
+}
+# Dead-link handling: socket-closed tracebacks heal instead of dumping.
+grep -q 'molten_handle_evaluate_error' "$config"
+grep -q 'colab_heal_link' "$config"
+grep -q 'socket is already closed' "$config"
+grep -q 'Colab link looks down' "$config"
+grep -q 'Cells run locally' "$config"
+# Molten deinit is best-effort so a dead link leaves no zombie kernel.
+grep -q 'best-effort kernel deinit' "$config"
+grep -q 'EOS: teardown is best-effort' "$HOME/.local/share/nvim/lazy/molten-nvim/rplugin/python3/molten/__init__.py"
+# Forward declarations precede first use (Lua resolves locals lexically).
+for pair in "colab_heal_link" "colab_probe_forward" "molten_handle_evaluate_error"; do
+  decl="$(grep -n "^local $pair$" "$config" | cut -d: -f1)"
+  use="$(grep -n "$pair" "$config" | grep -v "^$decl:" | head -1 | cut -d: -f1)"
+  [[ -n "$decl" && -n "$use" && "$decl" -lt "$use" ]] || {
+    echo "$pair must be forward-declared before use" >&2
+    exit 1
+  }
+done
 # Last-lease-holder stops the shared forward (no pgrep process scan).
 grep -q 'colab_hold_lease()' "$config"
 grep -q 'colab_other_lease_alive()' "$config"
