@@ -34,7 +34,7 @@ consider_candidate() {
   [[ -x "$candidate" ]] || return 0
   [[ "$candidate" != "$script_path" ]] || return 0
 
-  version="$("$candidate" --version 2>/dev/null | awk 'NR == 1 { print $1 }')"
+  version="$("$candidate" --version 2>/dev/null | sed -nE '1s/.*(^|[[:space:]])v?([0-9]+\.[0-9]+\.[0-9]+)([[:space:]]|$).*/\2/p')"
   [[ "$version" =~ ^[0-9]+[.][0-9]+[.][0-9]+$ ]] || return 0
 
   if [[ -z "$best_candidate" ]] || version_gt "$version" "$best_version"; then
