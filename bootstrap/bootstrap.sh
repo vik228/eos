@@ -62,6 +62,7 @@ link_file "$HOME/.config/nvim/lua/config/markdown_preview_style.json" "$ROOT/con
 link_file "$HOME/.config/nvim/lua/config/notebook_sync.lua" "$ROOT/configs/nvim/lua/config/notebook_sync.lua"
 link_file "$HOME/.config/nvim/lua/config/window_roles.lua" "$ROOT/configs/nvim/lua/config/window_roles.lua"
 link_file "$HOME/.config/nvim/lua/config/keymaps.lua" "$ROOT/configs/nvim/lua/config/keymaps.lua"
+link_file "$HOME/.config/nvim/lua/config/lazy.lua" "$ROOT/configs/nvim/lua/config/lazy.lua"
 link_file "$HOME/.config/nvim/lua/config/options.lua" "$ROOT/configs/nvim/lua/config/options.lua"
 link_file "$HOME/.config/nvim/lua/plugins/eos.lua" "$ROOT/configs/nvim/lua/plugins/eos.lua"
 link_file "$HOME/.config/nvim/lua/plugins/completion.lua" "$ROOT/configs/nvim/lua/plugins/completion.lua"
