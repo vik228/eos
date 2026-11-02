@@ -596,6 +596,24 @@ local function patch_molten_virtual_output_layout(plugin)
 ]],
       applied_marker = "# EOS opens the WezTerm plot pane lazily when an image is emitted.",
     },
+    {
+      name = "best-effort kernel deinit",
+      original = [[        # Have to copy this to get around reference issues
+        for kernel in [x for x in molten_kernels]:
+            kernel.deinit()
+]],
+      replacement = [[        # Have to copy this to get around reference issues
+        for kernel in [x for x in molten_kernels]:
+            try:
+                kernel.deinit()
+            except Exception:
+                # EOS: teardown is best-effort. A dead remote link raises
+                # here (shutdown DELETE fails) and must not leave a zombie
+                # kernel that prompts on every later evaluate.
+                pass
+]],
+      applied_marker = "# EOS: teardown is best-effort.",
+    },
   })
 
   local wezterm_loader_path = plugin.dir .. "/lua/load_wezterm_nvim.lua"
@@ -1037,6 +1055,25 @@ end
 
 local pending_molten_evaluations = {}
 
+-- Forward declaration: the evaluate-error handler below needs the heal
+-- runner from the Colab section. Without this, Lua resolves a global nil.
+local colab_heal_link
+
+-- Forward declaration: flush_pending is defined before the handler.
+local molten_handle_evaluate_error
+
+-- Forward declaration: the handler probes the forward, but the probe is
+-- defined with the other Colab helpers further below.
+local colab_probe_forward
+
+-- One heal attempt at a time (declared early so the evaluate-error handler
+-- can read it; mutated by the heal runner below).
+local colab_healing = false
+
+local function colab_heal_in_flight()
+  return colab_healing
+end
+
 local function evaluate_molten_range(bufnr, start_line, end_line)
   return vim.api.nvim_buf_call(bufnr, function()
     return pcall(vim.fn.MoltenEvaluateRange, start_line, end_line)
@@ -1058,7 +1095,9 @@ local function flush_pending_molten_evaluations(bufnr)
   for _, range in ipairs(pending) do
     local ok, err = evaluate_molten_range(bufnr, range.start_line, range.end_line)
     if not ok then
-      molten_notify_error(err)
+      if not molten_handle_evaluate_error(bufnr, err) then
+        molten_notify_error(err)
+      end
     end
   end
 end
@@ -1101,6 +1140,92 @@ local function molten_init_local(bufnr)
     molten_notify_error(err)
   end
   return false
+end
+
+-- True when an evaluate error means the remote link died (forward down,
+-- session reclaimed, server restarted), not a code error. Matched against
+-- the lowercased traceback text.
+local function colab_link_dead_error(err)
+  local text = tostring(err):lower()
+  local patterns = {
+    "socket is already closed",
+    "connectionclosed",
+    "connection refused",
+    "connection reset",
+    "connection aborted",
+    "connection timed out",
+    "broken pipe",
+    "name or service not known",
+    "temporary failure in name resolution",
+    "network is unreachable",
+    "no route to host",
+    "failed to establish a new connection",
+    "max retries exceeded",
+    "econnrefused",
+    "econnreset",
+    "enotconn",
+    "ehostunreach",
+    "enetunreach",
+    "etimedout",
+    "eai_again",
+    "eai_noname",
+  }
+  for _, pattern in ipairs(patterns) do
+    if text:find(pattern, 1, true) ~= nil then
+      return true
+    end
+  end
+  return false
+end
+
+-- Handles an evaluate failure on a remote buffer. MoltenEvaluateRange only
+-- raises on infrastructure failure (code errors surface as cell output), so
+-- any failure here is either the dead host or the dead link. A matching
+-- traceback heals at once; anything else (including empty errors) probes
+-- the forward first and surfaces the raw error only when the link is
+-- proven alive. Returns true when handled (caller must not also surface
+-- the raw traceback).
+molten_handle_evaluate_error = function(bufnr, err)
+  if not vim.api.nvim_buf_is_valid(bufnr) then
+    return false
+  end
+  if vim.b[bufnr].eos_colab_mode ~= "remote" then
+    return false
+  end
+  if molten_host_dead(err) then
+    return false
+  end
+  local conn = vim.g.eos_colab_connected
+  if conn == nil or conn.port == nil or conn.token == nil then
+    -- No connection tracked (another nvim stopped the shared forward, or
+    -- the state was lost): the remote kernel object is dead, go local now.
+    vim.api.nvim_buf_call(bufnr, function()
+      pcall(vim.cmd, "MoltenDeinit")
+    end)
+    vim.b[bufnr].eos_colab_mode = nil
+    vim.b[bufnr].eos_molten_initialized = nil
+    vim.b[bufnr].eos_colab_conn_key = nil
+    molten_init_local(bufnr)
+    vim.notify("Colab is gone; notebook is back on the local kernel. Re-run the cell. :ColabConnect for GPU.", vim.log.levels.WARN)
+    return true
+  end
+  if colab_heal_in_flight() then
+    return true
+  end
+  if colab_link_dead_error(err) then
+    vim.notify("Colab link looks down. Trying to heal; cells run locally if that fails.", vim.log.levels.WARN)
+    colab_heal_link()
+    return true
+  end
+  colab_probe_forward(conn.port, conn.token, function(alive)
+    if alive then
+      molten_notify_error(err)
+    else
+      vim.notify("Colab link looks down. Trying to heal; cells run locally if that fails.", vim.log.levels.WARN)
+      colab_heal_link()
+    end
+  end)
+  return true
 end
 
 -- Colab remote kernels -----------------------------------------------------
@@ -1188,6 +1313,7 @@ local colab_probe_drive
 
 -- Forward declaration (defined below ensure_forward).
 local colab_start_forward_run
+local colab_hold_lease
 
 local function colab_ensure_forward(create, cb)
   cb = cb or function() end
@@ -1452,7 +1578,7 @@ local function colab_lease_path()
   return colab_lease_dir() .. "/nvim-" .. tostring(vim.fn.getpid())
 end
 
-local function colab_hold_lease()
+colab_hold_lease = function()
   vim.fn.mkdir(colab_lease_dir(), "p")
   vim.fn.writefile({ "1" }, colab_lease_path())
 end
@@ -1595,7 +1721,7 @@ local function colab_mark_all_local(reason)
   vim.notify(reason, vim.log.levels.WARN)
 end
 
-local function colab_probe_forward(port, token, cb)
+colab_probe_forward = function(port, token, cb)
   vim.system({
     "curl", "-fsS", "-o", "/dev/null", "--max-time", "5",
     "http://127.0.0.1:" .. port .. "/api/kernels?token=" .. token,
@@ -1604,6 +1730,37 @@ local function colab_probe_forward(port, token, cb)
       cb(proc.code == 0)
     end)
   end)
+end
+
+-- A failed heal marks buffers local (via colab_mark_all_local), which clears
+-- the tracked connection, so repeated cell runs cannot hammer colab-connect.
+colab_heal_link = function()
+  local conn = vim.g.eos_colab_connected
+  if conn == nil or conn.port == nil or conn.token == nil then
+    return false
+  end
+  if colab_healing then
+    return true
+  end
+  colab_healing = true
+  colab_probe_forward(conn.port, conn.token, function(alive)
+    if alive then
+      colab_healing = false
+      return
+    end
+    colab_ensure_forward(false, function(info)
+      colab_healing = false
+      if info == nil then
+        colab_mark_all_local("Colab link lost and reconnect failed. Cells run locally until :ColabConnect.")
+        return
+      end
+      colab_reinit_remote_buffers(info)
+      vim.g.eos_colab_last_remote_run = os.time()
+      colab_hold_lease()
+      vim.notify("Colab link healed. Re-run cells on the fresh kernel.", vim.log.levels.INFO)
+    end)
+  end)
+  return true
 end
 
 -- True when any remote kernel reports busy. A training cell started 16
@@ -1657,16 +1814,7 @@ local function colab_idle_check()
     if alive then
       return
     end
-    colab_ensure_forward(false, function(info)
-      if info == nil then
-        colab_mark_all_local("Colab link lost and reconnect failed. Cells run locally until :ColabConnect.")
-        return
-      end
-      colab_reinit_remote_buffers(info)
-      vim.g.eos_colab_last_remote_run = os.time()
-      colab_hold_lease()
-      vim.notify("Colab link healed. Re-run cells on the fresh kernel.", vim.log.levels.INFO)
-    end)
+    colab_heal_link()
   end)
 end
 
@@ -1746,7 +1894,9 @@ local function evaluate_range_inline(start_line, end_line)
 
   local ok, err = evaluate_molten_range(bufnr, start_line, end_line)
   if not ok then
-    molten_notify_error(err)
+    if not molten_handle_evaluate_error(bufnr, err) then
+      molten_notify_error(err)
+    end
     return false
   end
 

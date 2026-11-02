@@ -64,6 +64,7 @@ link_file "$HOME/.config/nvim/lua/config/window_roles.lua" "$ROOT/configs/nvim/l
 link_file "$HOME/.config/nvim/lua/config/keymaps.lua" "$ROOT/configs/nvim/lua/config/keymaps.lua"
 link_file "$HOME/.config/nvim/lua/config/options.lua" "$ROOT/configs/nvim/lua/config/options.lua"
 link_file "$HOME/.config/nvim/lua/plugins/eos.lua" "$ROOT/configs/nvim/lua/plugins/eos.lua"
+link_file "$HOME/.config/nvim/lua/plugins/completion.lua" "$ROOT/configs/nvim/lua/plugins/completion.lua"
 link_file "$HOME/.config/nvim/lua/plugins/notebooks.lua" "$ROOT/configs/nvim/lua/plugins/notebooks.lua"
 link_file "$HOME/.config/nvim/lua/plugins/save.lua" "$ROOT/configs/nvim/lua/plugins/save.lua"
 
