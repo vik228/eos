@@ -1,22 +1,11 @@
--- Python type-ahead + AI completion.
+-- Supermaven work-profile guard (buffer level).
 --
--- Type-ahead: LazyVim python extra (pyright + ruff via mason) plus blink.cmp.
--- Applies to plain .py files and notebook buffers (jupytext `# %%` python).
--- Global: no privacy concern (local LSP).
---
--- AI: Supermaven, gated in two layers (privacy: Supermaven sends Code Data
--- to its cloud servers, so work files must never reach it):
---   1. Instance level: the extra loads only when EOS_PROFILE ~= "work".
---      Backend/research workspaces launch separate nvim instances, so a work
---      workspace nvim never loads the plugin at all.
---   2. Buffer level: `condition` stops the binary for buffers under work
---      roots. This covers work files opened from a non-work nvim (plain
---      `nvim` from shell, cross-opened paths). Checked on every BufEnter.
-
-local specs = {
-  { import = "lazyvim.plugins.extras.lang.python" },
-  { import = "lazyvim.plugins.extras.coding.blink" },
-}
+-- The extra itself is imported top-level in config/lazy.lua (LazyVim
+-- requires extras imports before your own `plugins`). Instance level is
+-- handled there via `enabled`. This spec only stops the binary for buffers
+-- under work roots, covering work files opened from a non-work nvim.
+-- Checked on every BufEnter. Python LSP stays global (local, no privacy
+-- concern).
 
 local function work_path_prefixes()
   local roots = {}
@@ -45,15 +34,12 @@ local function supermaven_off_for_buffer()
   return false
 end
 
-if vim.env.EOS_PROFILE ~= "work" then
-  specs[#specs + 1] = { import = "lazyvim.plugins.extras.ai.supermaven" }
-  specs[#specs + 1] = {
+return {
+  {
     "supermaven-inc/supermaven-nvim",
     optional = true,
     opts = function(_, opts)
       opts.condition = supermaven_off_for_buffer
     end,
-  }
-end
-
-return specs
+  },
+}
