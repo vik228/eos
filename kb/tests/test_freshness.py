@@ -59,13 +59,14 @@ def _concept(
     source_revision: str | None = None,
     stale_after: str | None = None,
     status: str = "stable",
+    concept_type: str = "Decision",
     claims: tuple[tuple[str, object], ...] = (),
     sources: tuple[str, ...] = (),
     verified: tuple[dict[str, object], ...] = (),
     body: str = "# Note\nDocumented behavior.",
 ) -> None:
     metadata: dict[str, object] = {
-        "type": "Decision",
+        "type": concept_type,
         "title": Path(relative).stem,
         "resource": resource,
         "status": status,
@@ -224,6 +225,30 @@ def test_time_drift_and_external_content_hashes_are_independent(
     )
     assert changed.external_sources[0].state == "drifted"
     assert changed.time[0].state == "stale"
+
+
+def test_a_log_is_a_dated_record_and_never_goes_time_stale(
+    tmp_path: Path,
+    isolated_state: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    _concept(
+        isolated_state,
+        "logs/2026/old-session.md",
+        resource="kb:alpha/old-session",
+        stale_after="2026-01-01T00:00:00+00:00",
+        concept_type="Log",
+    )
+    index_bundle(isolated_state)
+
+    report = audit_freshness(
+        isolated_state,
+        repo,
+        now=datetime(2026, 7, 1, tzinfo=timezone.utc),
+    )
+
+    assert report.time == ()
+    assert report.overall != "stale"
 
 
 def test_unverified_external_file_is_unknown_without_being_read(
