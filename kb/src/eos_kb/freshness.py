@@ -446,7 +446,7 @@ def audit_freshness(
         if connection.execute("PRAGMA quick_check").fetchone()[0] != "ok":
             raise sqlite3.DatabaseError("quick_check failed")
         concepts = connection.execute(
-            "SELECT relative_file, resource, project, status, verified, stale_after, "
+            "SELECT relative_file, resource, project, type, status, verified, stale_after, "
             "source_revision FROM concepts ORDER BY relative_file"
         ).fetchall()
         indexed_sources: dict[str, dict[str, list[str]]] = {}
@@ -568,7 +568,9 @@ def audit_freshness(
                 )
             )
 
-        if row["stale_after"]:
+        # A Log is a dated record of what happened; it cannot go out of date, so its
+        # stale_after is ignored rather than blocking the lifecycle when it passes.
+        if row["stale_after"] and row["type"] != "Log":
             stale_at = _parse_time(row["stale_after"])
             time_state = "unknown" if stale_at is None else (
                 "stale" if generated >= stale_at else "current"
