@@ -1,0 +1,207 @@
+#!/usr/bin/env bash
+# Sync local Python package directories from a project root to the active Colab
+# Jupyter server over the existing localhost HTTP forward (/api/contents).
+# Uses no second SSH bridge slot.
+#
+#   colab-sync [--root DIR] [relpath ...]
+#
+# Discovery order when no relpath arguments are given:
+#   1. $PROJECT_ROOT/.colab-sync (one relative path per line, # comments allowed)
+#   2. $EOS_COLAB_SYNC_PATHS (colon- or space-separated relative paths)
+#   3. Auto-discover top-level directories under $PROJECT_ROOT that contain .py
+#      files (excluding .git, .venv, data, outputs, notebooks, artifacts, etc.)
+set -euo pipefail
+
+ROOT="${EOS_ROOT:-$HOME/personal/eos}"
+source "$ROOT/scripts/lib-eos-config.sh"
+LOCAL_PORT="${EOS_COLAB_LOCAL_PORT:-18989}"
+STATE_DIR="${EOS_STATE_DIR:-$HOME/.local/state/eos}/colab"
+STATE="$STATE_DIR/forward.env"
+
+TARGET_ROOT=""
+PATHS=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --root)
+      [[ $# -ge 2 ]] || { echo "colab-sync: --root requires a directory" >&2; exit 2; }
+      TARGET_ROOT="$2"
+      shift 2
+      ;;
+    -h|--help)
+      sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+      exit 0
+      ;;
+    -*)
+      echo "colab-sync: unknown option: $1" >&2
+      exit 2
+      ;;
+    *)
+      PATHS+=("$1")
+      shift
+      ;;
+  esac
+done
+
+die() { echo "colab-sync: $*" >&2; exit 1; }
+
+[[ -f "$STATE" ]] || die "no active Colab forward (connect first with :ColabConnect)"
+# shellcheck source=/dev/null
+source "$STATE"
+PORT="${STATE_LOCAL_PORT:-$LOCAL_PORT}"
+TOKEN="${STATE_TOKEN:-}"
+[[ -n "$TOKEN" ]] || die "missing token in $STATE"
+
+if ! curl -fsS -o /dev/null --max-time 5 "http://127.0.0.1:$PORT/api/kernels?token=$TOKEN" 2>/dev/null; then
+  die "Colab forward on 127.0.0.1:$PORT is not reachable"
+fi
+
+find_project_root() {
+  local dir
+  dir="$(cd "${1:-$PWD}" && pwd -P)"
+  while [[ "$dir" != "/" && -n "$dir" ]]; do
+    if [[ -d "$dir/.git" || -d "$dir/.venv" || -f "$dir/.colab-sync" ]]; then
+      printf '%s\n' "$dir"
+      return 0
+    fi
+    [[ "$dir" == "$HOME" ]] && break
+    dir="$(dirname "$dir")"
+  done
+  cd "${1:-$PWD}" && pwd -P
+}
+
+PROJECT_ROOT="$(find_project_root "${TARGET_ROOT:-$PWD}")"
+
+python3 - "$PROJECT_ROOT" "$PORT" "$TOKEN" "${PATHS[@]+"${PATHS[@]}"}" <<'PY'
+import json
+import os
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+project_root = Path(sys.argv[1]).resolve()
+port = sys.argv[2]
+token = sys.argv[3]
+explicit_paths = sys.argv[4:]
+
+SKIP_DIRS = {
+    ".git",
+    ".hg",
+    ".svn",
+    ".venv",
+    "venv",
+    "env",
+    "__pycache__",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".ipynb_checkpoints",
+    "node_modules",
+    "data",
+    "outputs",
+    "notebooks",
+    "artifacts",
+    "reports",
+    "logs",
+    "build",
+    "dist",
+    "scratch",
+}
+
+
+def discover_targets() -> list[Path]:
+    if explicit_paths:
+        return [project_root / p for p in explicit_paths]
+
+    sync_file = project_root / ".colab-sync"
+    if sync_file.is_file():
+        items = []
+        for raw in sync_file.read_text().splitlines():
+            line = raw.split("#", 1)[0].strip()
+            if line:
+                items.append(project_root / line)
+        return items
+
+    env_paths = os.environ.get("EOS_COLAB_SYNC_PATHS", "").strip()
+    if env_paths:
+        sep = ":" if ":" in env_paths else None
+        return [project_root / p for p in env_paths.split(sep) if p.strip()]
+
+    found: list[Path] = []
+    for child in sorted(project_root.iterdir()):
+        if child.name.startswith(".") or child.name in SKIP_DIRS:
+            continue
+        if child.is_dir():
+            has_py = any(
+                p.is_file()
+                for p in child.rglob("*.py")
+                if not any(part.startswith(".") or part in SKIP_DIRS for part in p.relative_to(project_root).parts)
+            )
+            if has_py:
+                found.append(child)
+    return found
+
+
+def put_contents(rel_posix: str, payload: dict) -> None:
+    quoted = urllib.parse.quote(rel_posix.lstrip("/"))
+    url = f"http://127.0.0.1:{port}/api/contents/{quoted}?token={token}"
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="PUT",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            resp.read()
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"PUT /api/contents/{rel_posix} failed ({exc.code}): {body}") from exc
+
+
+targets = discover_targets()
+created_dirs: set[str] = set()
+synced_files = 0
+synced_roots: list[str] = []
+
+
+def ensure_remote_dir(rel_dir: Path) -> None:
+    parts = rel_dir.parts
+    for i in range(1, len(parts) + 1):
+        prefix = "/".join(parts[:i])
+        if prefix not in created_dirs:
+            put_contents(prefix, {"type": "directory"})
+            created_dirs.add(prefix)
+
+
+for target in targets:
+    if not target.exists():
+        continue
+    rel_target = target.resolve().relative_to(project_root)
+    synced_roots.append(str(rel_target))
+    if target.is_file() and target.suffix == ".py":
+        if len(rel_target.parts) > 1:
+            ensure_remote_dir(rel_target.parent)
+        put_contents(
+            rel_target.as_posix(),
+            {"type": "file", "format": "text", "content": target.read_text(encoding="utf-8")},
+        )
+        synced_files += 1
+    elif target.is_dir():
+        for py_file in sorted(target.rglob("*.py")):
+            rel = py_file.resolve().relative_to(project_root)
+            if any(part.startswith(".") or part in SKIP_DIRS for part in rel.parts):
+                continue
+            ensure_remote_dir(rel.parent)
+            put_contents(
+                rel.as_posix(),
+                {"type": "file", "format": "text", "content": py_file.read_text(encoding="utf-8")},
+            )
+            synced_files += 1
+
+roots_label = ", ".join(synced_roots) if synced_roots else "none"
+print(f"colab-sync: synced {synced_files} .py files from {project_root.name} ({roots_label})")
+PY

@@ -1310,6 +1310,7 @@ local colab_connect_queue = nil
 -- Forward declaration: colab_use_remote calls this on success, but the
 -- definition lives further below. Without this, Lua resolves a global nil.
 local colab_probe_drive
+local colab_sync_modules
 
 -- Forward declaration (defined below ensure_forward).
 local colab_start_forward_run
@@ -1526,6 +1527,7 @@ local function colab_use_remote(bufnr, create, cb)
     end
     colab_refresh_winbar()
     colab_probe_drive()
+    colab_sync_modules(bufnr, nil, true)
     colab_mark_activity(bufnr)
     colab_hold_lease()
     vim.notify("Notebook kernel: Colab (" .. (info.SESSION or "gpu") .. ").", vim.log.levels.INFO)
@@ -1672,6 +1674,34 @@ colab_probe_drive = function()
       -- must not read as "not mounted".
       if proc.code == 1 then
         vim.notify("Drive is not mounted on the Colab VM. :ColabDrive mounts it (browser consent).", vim.log.levels.WARN)
+      end
+    end)
+  end)
+end
+
+colab_sync_modules = function(bufnr, extra_paths, quiet)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  local dir = vim.fn.getcwd()
+  if vim.api.nvim_buf_is_valid(bufnr) then
+    local name = vim.api.nvim_buf_get_name(bufnr)
+    if name ~= "" then
+      dir = vim.fn.fnamemodify(name, ":p:h")
+    end
+  end
+  local cmd = { colab_script("colab-sync"), "--root", dir }
+  for _, p in ipairs(extra_paths or {}) do
+    if p ~= "" then
+      table.insert(cmd, p)
+    end
+  end
+  vim.system(cmd, { text = true }, function(proc)
+    vim.schedule(function()
+      if proc.code ~= 0 then
+        local msg = vim.trim(proc.stderr or proc.stdout or "colab-sync failed")
+        vim.notify(msg, vim.log.levels.WARN)
+      elseif not quiet then
+        local msg = vim.trim(proc.stdout or "Colab modules synced.")
+        vim.notify(msg, vim.log.levels.INFO)
       end
     end)
   end)
@@ -2298,6 +2328,9 @@ return {
         colab_stop_now("Colab stopped. Notebook cells will run locally until :ColabConnect.")
       end, {})
       vim.api.nvim_create_user_command("ColabDrive", colab_drive_mount, {})
+      vim.api.nvim_create_user_command("ColabSync", function(opts)
+        colab_sync_modules(vim.api.nvim_get_current_buf(), opts.fargs, false)
+      end, { nargs = "*" })
       -- Data convention: the first code cell containing a `# eos-data`
       -- comment line declares the notebook's datasets. :ColabData runs it
       -- on the current kernel (local or Colab), so data lands where compute
