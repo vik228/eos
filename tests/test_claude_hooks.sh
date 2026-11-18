@@ -60,6 +60,45 @@ event PostCompact '{"hook_event_name":"PostCompact"}' | grep -q 'Every discussio
 event Stop '{"hook_event_name":"Stop","stop_hook_active":false}' | grep -q '"continue":true'
 invalid_response="$(event Stop '{"hook_event_name":"Stop","last_assistant_message":"bad \u2014 response"}')"
 grep -q '"decision": "block"' <<<"$invalid_response"
+urdu_response="$(event Stop '{"hook_event_name":"Stop","last_assistant_message":"yeh \u067e\u0648\u0631\u0627 galat hai"}')"
+grep -q '"decision": "block"' <<<"$urdu_response"
+devanagari_response="$(event Stop '{"hook_event_name":"Stop","last_assistant_message":"yeh \u091c\u093e\u0928\u0947 galat hai"}')"
+grep -q '"decision": "block"' <<<"$devanagari_response"
+
+# Antigravity hook contract tests
+agy_transcript="$tmp/agy-transcript.jsonl"
+printf '%s\n' \
+  '{"step_index":0,"type":"USER_INPUT","content":"explain batch norm"}' \
+  '{"step_index":1,"type":"PLANNER_RESPONSE","content":"yeh \u091c\u093e\u0928\u0947 aur \u067e\u0648\u0631\u0627 galat hai"}' \
+  >"$agy_transcript"
+agy_stop_bad="$(event Stop "{\"hookEventName\":\"Stop\",\"cwd\":\"$tmp\",\"transcriptPath\":\"$agy_transcript\"}")"
+grep -q '"decision": "continue"' <<<"$agy_stop_bad"
+
+printf '%s\n' \
+  '{"step_index":0,"type":"USER_INPUT","content":"explain batch norm"}' \
+  '{"step_index":1,"type":"PLANNER_RESPONSE","content":"Clean Hinglish response with plain - dash."}' \
+  >"$agy_transcript"
+agy_stop_ok="$(event Stop "{\"hookEventName\":\"Stop\",\"cwd\":\"$tmp\",\"transcriptPath\":\"$agy_transcript\"}")"
+grep -q '"decision": "allow"' <<<"$agy_stop_ok"
+
+agy_kb_block="$(event PreToolUse "{\"hookEventName\":\"PreToolUse\",\"cwd\":\"$tmp\",\"toolCall\":{\"name\":\"write_file\",\"args\":{\"Path\":\"$tmp/kb-root/projects/eos/stable.md\"}}}")"
+grep -q '"decision": "deny"' <<<"$agy_kb_block"
+agy_kb_allow="$(event PreToolUse "{\"hookEventName\":\"PreToolUse\",\"cwd\":\"$tmp\",\"toolCall\":{\"name\":\"edit_file\",\"args\":{\"Path\":\"$tmp/kb-root/projects/eos/_pending-kb-updates.md\"}}}")"
+grep -q '"decision": "allow"' <<<"$agy_kb_allow"
+agy_pre_inv="$(event PreInvocation '{"hookEventName":"PreInvocation","lastUserInput":"lets discuss evaluation strategy"}')"
+grep -q '"injectSteps"' <<<"$agy_pre_inv"
+
+# Codex hook contract tests
+codex_stop_bad="$(event Stop '{"hook_event_name":"Stop","turn_id":"t1","last_assistant_message":"bad \u067e\u0648\u0631\u0627 response"}')"
+grep -q '"decision": "block"' <<<"$codex_stop_bad"
+! grep -q '"continue": false' <<<"$codex_stop_bad"
+codex_kb_block="$(event PreToolUse "{\"hook_event_name\":\"PreToolUse\",\"turn_id\":\"t1\",\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$tmp/kb-root/projects/eos/stable.md\"}}")"
+grep -q '"decision": "block"' <<<"$codex_kb_block"
+! grep -q '"continue": false' <<<"$codex_kb_block"
+codex_post_compact="$(event PostCompact '{"hook_event_name":"PostCompact","turn_id":"t1","trigger":"auto"}')"
+grep -q '"systemMessage"' <<<"$codex_post_compact"
+! grep -q '"message"' <<<"$codex_post_compact"
+
 event SessionEnd '{"hook_event_name":"SessionEnd"}' | grep -q '"continue":true'
 
 before_starts="$(grep -c '^session start ' "$log" || true)"
@@ -86,6 +125,13 @@ assert settings["attribution"] == {"commit": "", "pr": "", "sessionUrl": False}
 assert all(event in settings["hooks"] for event in ("InstructionsLoaded", "SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PreCompact", "PostCompact", "Stop", "SessionEnd"))
 assert any("scripts/eos-kb-capture" in hook["command"] for entry in settings["hooks"]["PreCompact"] for hook in entry["hooks"])
 assert any("scripts/eos-kb-capture" in hook["command"] for entry in settings["hooks"]["SessionEnd"] for hook in entry["hooks"])
+agy_hooks = json.loads((home / ".gemini/config/hooks.json").read_text())
+assert "eos" in agy_hooks
+assert all(event in agy_hooks["eos"] for event in ("SessionStart", "PreInvocation", "PreToolUse", "PostToolUse", "Stop"))
+for codex_profile in (".codex", ".codex-work", ".codex-personal"):
+    codex_hooks = json.loads((home / codex_profile / "hooks.json").read_text())
+    assert all(event in codex_hooks["hooks"] for event in ("SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PreCompact", "PostCompact", "Stop", "SessionEnd"))
+    assert "InstructionsLoaded" not in codex_hooks["hooks"]
 for relative in (
     ".gemini/skills/knowledge-management",
     ".gemini/antigravity-ide/skills/bug-investigation",
