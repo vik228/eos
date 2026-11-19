@@ -94,7 +94,19 @@ elif flavor == "codex":
     else:
         print(json.dumps({"continue": True, "systemMessage": msg}))
 else:
-    print(json.dumps({"continue": True, "message": msg}))
+    # Claude Code reads only documented output fields and silently drops
+    # unknown keys. Model context goes through additionalContext on the
+    # events that support it; other events surface msg as systemMessage.
+    if ev in ("SessionStart", "UserPromptSubmit"):
+        print(json.dumps({
+            "continue": True,
+            "hookSpecificOutput": {
+                "hookEventName": ev,
+                "additionalContext": msg,
+            },
+        }))
+    else:
+        print(json.dumps({"continue": True, "systemMessage": msg}))
 PY
 }
 
