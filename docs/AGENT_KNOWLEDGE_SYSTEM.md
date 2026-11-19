@@ -114,6 +114,32 @@ independent of repository identity. Claude refreshes it through SessionStart
 and PostCompact hooks; other transports retain it through their generated
 instruction surface.
 
+## Hook transports (Claude, Codex, Antigravity)
+
+`scripts/merge-agent-settings` installs all three surfaces: Claude
+`~/.claude*/settings.json`, Codex `~/.codex*/hooks.json`, Antigravity
+`~/.gemini/config/hooks.json` (top-level `eos` group: SessionStart,
+PreInvocation, PreToolUse, PostToolUse, Stop).
+
+- Antigravity uses camelCase stdin (`hookEventName`, `toolCall.name` /
+  `toolCall.args`, `transcriptPath`, `lastUserInput`) and omits
+  `last_assistant_message` on Stop, so the hook reads the last
+  `PLANNER_RESPONSE` step from `transcriptPath` (plus
+  `transcript_full.jsonl` for truncated steps). Replies:
+  `{"decision":"allow"}` to pass, `{"decision":"deny"}` to block
+  PreToolUse, `{"decision":"continue"}` to block Stop, and
+  `{"injectSteps":[{"systemMessage":{"systemMessage":"..."}}]}` on
+  SessionStart / PreInvocation.
+- Codex `hooks.json` must not contain `InstructionsLoaded` (schema rejects
+  it). The hook never emits `"continue": false` on PreToolUse, uses
+  `{"decision":"block"}` for blocks, and uses `systemMessage` (not
+  `message`) on SessionStart / PostCompact / UserPromptSubmit.
+- The Stop language guard covers the em dash plus Devanagari and related
+  Indic scripts (`U+0900-U+0DFF`) and Arabic / Urdu ranges (`U+0600-U+06FF`,
+  `U+0750-U+077F`, `U+08A0-U+08FF`, `U+FB50-U+FDFF`, `U+FE70-U+FEFF`).
+- `EOS_AGENT_PROFILE=default` falls through to cwd inference, so the
+  SessionStart pending-queue reminder still fires instead of being skipped.
+
 ## Bug Investigations
 
 ```bash

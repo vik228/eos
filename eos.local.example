@@ -21,7 +21,7 @@
 : "${EOS_WORK_RELATED_PROJECTS:=}"
 : "${EOS_RESEARCH_DIR:=$EOS_PERSONAL_ROOT/research-project}"
 : "${EOS_RESEARCH_PROJECT_SLUG:=research}"
-: "${EOS_ALGO_DIR:=$EOS_PERSONAL_ROOT/leetcode}"
+: "${EOS_ALGO_DIR:=$EOS_PERSONAL_ROOT/coding-gym}"
 : "${EOS_AGENT_PROFILE_NAME:=User}"
 
 # Optional Markdown appended only to locally installed agent instructions.

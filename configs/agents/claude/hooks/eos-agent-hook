@@ -17,42 +17,180 @@ json_string() {
   printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'
 }
 
-emit_continue() { printf '%s\n' '{"continue":true}'; }
+agent_flavor="$(printf '%s' "$payload" | python3 -c 'import json, os, sys
+env_agent = os.environ.get("EOS_HOOK_AGENT", "").strip().lower()
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    d = {}
+if env_agent in ("antigravity", "codex", "claude"):
+    print(env_agent)
+elif any(k in d for k in ("hookEventName", "toolCall", "transcriptPath", "conversationId", "lastUserInput")):
+    print("antigravity")
+elif "turn_id" in d:
+    print("codex")
+else:
+    print("claude")
+')"
+
+hook_cwd="$(printf '%s' "$payload" | python3 -c 'import json, os, sys
+try:
+    d = json.load(sys.stdin)
+    cwd = d.get("cwd") or ""
+except Exception:
+    cwd = ""
+print(cwd if cwd else os.getcwd())
+')"
+
+emit_continue() {
+  if [[ "$agent_flavor" == "antigravity" ]]; then
+    if [[ "$event" == "PreToolUse" || "$event" == "Stop" ]]; then
+      printf '%s\n' '{"decision": "allow"}'
+    else
+      printf '%s\n' '{}'
+    fi
+  else
+    printf '%s\n' '{"continue":true}'
+  fi
+}
+
 emit_block() {
   local reason="$1"
-  python3 - "$reason" <<'PY'
+  python3 - "$agent_flavor" "$event" "$reason" <<'PY'
 import json, sys
-print(json.dumps({"continue": False, "decision": "block", "reason": sys.argv[1]}))
+flavor, ev, reason = sys.argv[1], sys.argv[2], sys.argv[3]
+if flavor == "antigravity":
+    decision = "deny" if ev == "PreToolUse" else "continue"
+    print(json.dumps({"decision": decision, "reason": reason}))
+elif flavor == "codex":
+    print(json.dumps({"decision": "block", "reason": reason}))
+else:
+    print(json.dumps({"continue": False, "decision": "block", "reason": reason}))
 PY
 }
 
-prompt_text="$(printf '%s' "$payload" | python3 -c 'import json,sys
+emit_message() {
+  local msg="$1"
+  python3 - "$agent_flavor" "$event" "$msg" <<'PY'
+import json, sys
+flavor, ev, msg = sys.argv[1], sys.argv[2], sys.argv[3]
+if flavor == "antigravity":
+    if ev in ("SessionStart", "PreInvocation", "UserPromptSubmit"):
+        print(json.dumps({"injectSteps": [{"systemMessage": {"systemMessage": msg}}]}))
+    elif ev == "Stop":
+        print(json.dumps({"decision": "allow"}))
+    else:
+        print("{}")
+elif flavor == "codex":
+    if ev in ("SessionStart", "UserPromptSubmit"):
+        print(json.dumps({
+            "continue": True,
+            "systemMessage": msg,
+            "hookSpecificOutput": {
+                "hookEventName": ev,
+                "additionalContext": msg,
+            },
+        }))
+    else:
+        print(json.dumps({"continue": True, "systemMessage": msg}))
+else:
+    print(json.dumps({"continue": True, "message": msg}))
+PY
+}
+
+prompt_text="$(printf '%s' "$payload" | python3 -c 'import json, pathlib, sys
 try:
- d=json.load(sys.stdin)
- print(" ".join(str(d.get(k,"")) for k in ("prompt","last_assistant_message","transcript")))
+    d = json.load(sys.stdin)
 except Exception:
- print("")')"
-response_invalid="$(printf '%s' "$payload" | python3 -c 'import json,sys
+    d = {}
+parts = [str(d.get(k, "")) for k in ("prompt", "lastUserInput", "last_assistant_message", "transcript") if d.get(k)]
+tp = d.get("transcriptPath") or d.get("transcript_path") or ""
+if tp:
+    p = pathlib.Path(tp)
+    if p.is_file():
+        try:
+            for line in reversed(p.read_text(errors="replace").splitlines()):
+                rec = json.loads(line)
+                if rec.get("type") == "USER_INPUT" and rec.get("content"):
+                    parts.append(str(rec.get("content")))
+                    break
+        except Exception:
+            pass
+print(" ".join(parts))
+')"
+
+response_invalid="$(printf '%s' "$payload" | python3 -c 'import json, pathlib, sys
+def has_forbidden_chars(text: str) -> bool:
+    for c in text:
+        if c == "\u2014":
+            return True
+        if "\u0900" <= c <= "\u0dff":
+            return True
+        if "\u0600" <= c <= "\u06ff" or "\u0750" <= c <= "\u077f" or "\u08a0" <= c <= "\u08ff" or "\ufb50" <= c <= "\ufdff" or "\ufe70" <= c <= "\ufeff":
+            return True
+    return False
+
 try:
- d=json.load(sys.stdin); value=" ".join(str(d.get(k,"")) for k in ("last_assistant_message","assistant_message","response"))
- print("1" if "\u2014" in value or any("\u0900" <= c <= "\u097f" for c in value) else "0")
-except Exception: print("0")')"
+    d = json.load(sys.stdin)
+except Exception:
+    d = {}
+
+value = " ".join(str(d.get(k, "")) for k in ("last_assistant_message", "assistant_message", "response") if d.get(k))
+if not value.strip():
+    tp = d.get("transcriptPath") or ""
+    if tp:
+        p = pathlib.Path(tp)
+        if p.is_file():
+            try:
+                records = [json.loads(line) for line in p.read_text(errors="replace").splitlines() if line.strip()]
+                last_user_idx = -1
+                for idx, rec in enumerate(records):
+                    if rec.get("type") == "USER_INPUT":
+                        last_user_idx = idx
+                candidates = records[last_user_idx + 1:] if last_user_idx >= 0 else records
+                chunks = []
+                full_path = p.with_name("transcript_full.jsonl")
+                for rec in candidates:
+                    if rec.get("type") == "PLANNER_RESPONSE":
+                        content = rec.get("content") or ""
+                        if "content" in (rec.get("truncated_fields") or []) and full_path.is_file():
+                            step_idx = rec.get("step_index")
+                            for fline in full_path.read_text(errors="replace").splitlines():
+                                frec = json.loads(fline)
+                                if frec.get("step_index") == step_idx:
+                                    content = frec.get("content") or content
+                                    break
+                        if content:
+                            chunks.append(str(content))
+                value = chunks[-1] if chunks else ""
+            except Exception:
+                pass
+print("1" if has_forbidden_chars(value) else "0")
+')"
 
 native_session="$(printf '%s' "$payload" | python3 -c 'import json,sys
-try: print(json.load(sys.stdin).get("session_id",""))
+try:
+ d=json.load(sys.stdin)
+ print(d.get("session_id") or d.get("conversationId") or "")
 except Exception: print("")')"
 
 case "$event" in
   PreToolUse)
     tool_name="$(printf '%s' "$payload" | python3 -c 'import json,sys
-try: print(json.load(sys.stdin).get("tool_name", ""))
+try:
+ d=json.load(sys.stdin)
+ tc=d.get("toolCall") if isinstance(d.get("toolCall"), dict) else {}
+ print(d.get("tool_name") or tc.get("name") or "")
 except Exception: print("")')"
     file_path="$(printf '%s' "$payload" | python3 -c 'import json,sys
 try:
- d=json.load(sys.stdin); t=d.get("tool_input", {})
- print(t.get("file_path", t.get("path", "")) if isinstance(t, dict) else "")
+ d=json.load(sys.stdin)
+ t=d.get("tool_input") if isinstance(d.get("tool_input"), dict) else {}
+ tc=d.get("toolCall") if isinstance(d.get("toolCall"), dict) else {}
+ args=tc.get("args") if isinstance(tc.get("args"), dict) else {}
+ print(t.get("file_path") or t.get("path") or t.get("Path") or args.get("Path") or args.get("file_path") or args.get("path") or "")
 except Exception: print("")')"
-    if [[ "$tool_name" =~ ^(Write|Edit|MultiEdit|NotebookEdit)$ && -n "$file_path" ]]; then
+    if [[ "$tool_name" =~ ^(Write|Edit|MultiEdit|NotebookEdit|write_file|edit_file|multi_edit|notebook_edit)$ && -n "$file_path" ]]; then
       personal_root="${EOS_PERSONAL_KNOWLEDGE_DIR:-$HOME/personal/knowledge}"
       work_root="${EOS_WORK_KNOWLEDGE_ROOT:-$HOME/work/knowledge}"
       explicit_root="${EOS_KB_ROOT:-}"
@@ -84,8 +222,11 @@ PY
     fi
     command_text="$(printf '%s' "$payload" | python3 -c 'import json,sys
 try:
- d=json.load(sys.stdin); t=d.get("tool_input",{})
- print(t.get("command","") if isinstance(t,dict) else "")
+ d=json.load(sys.stdin)
+ t=d.get("tool_input") if isinstance(d.get("tool_input"), dict) else {}
+ tc=d.get("toolCall") if isinstance(d.get("toolCall"), dict) else {}
+ args=tc.get("args") if isinstance(tc.get("args"), dict) else {}
+ print(t.get("command") or t.get("CommandLine") or args.get("CommandLine") or args.get("command") or "")
 except Exception: print("")')"
     if printf '%s' "$command_text" | grep -Eiq '(^|[[:space:]])(git[[:space:]]+(commit|push)|gh[[:space:]]+pr)([[:space:]]|$)|Co-authored-by:|co-authored-by:|session(url|_url)|attribution'; then
       if printf '%s' "$command_text" | grep -Eiq 'Co-authored-by:|co-authored-by:|session(url|_url)|attribution'; then
@@ -95,28 +236,28 @@ except Exception: print("")')"
     fi
     emit_continue
     ;;
-  UserPromptSubmit)
+  UserPromptSubmit|PreInvocation)
     branching_match=0
     bug_match=0
     printf '%s' "$prompt_text" | grep -Eiq '\b(discuss|discussion|plan|planning|design|roadmap|evaluation|strategy|requirements?|trade-?offs?|brainstorm|explore)\b' && branching_match=1
     printf '%s' "$prompt_text" | grep -Eiq '\b(bug|regression|failed test|unexpected output|production discrepancy)\b' && bug_match=1
     if [[ "$branching_match" == 1 && "$bug_match" == 1 ]]; then
-      printf '%s\n' '{"continue":true,"message":"Branching discussion and bug task detected: read branching-discussion/SKILL.md and bug-investigation/SKILL.md completely before acting. Keep the reply simple, ask one question at a time during exploration, and reproduce the bug through the closest end-user path before fixing."}'
+      emit_message "Branching discussion and bug task detected: read branching-discussion/SKILL.md and bug-investigation/SKILL.md completely before acting. Keep the reply simple, ask one question at a time during exploration, and reproduce the bug through the closest end-user path before fixing."
     elif [[ "$branching_match" == 1 ]]; then
-      printf '%s\n' '{"continue":true,"message":"Branching discussion detected: read branching-discussion/SKILL.md completely before the first question. Keep the reply simple and short, ask one question at a time, and keep global rules active."}'
+      emit_message "Branching discussion detected: read branching-discussion/SKILL.md completely before the first question. Keep the reply simple and short, ask one question at a time, and keep global rules active."
     elif [[ "$bug_match" == 1 ]]; then
-      printf '%s\n' '{"continue":true,"message":"Bug-shaped task detected: start with kb bug start, reproduce through the closest end-user path, and record evidence before fixing."}'
+      emit_message "Bug-shaped task detected: start with kb bug start, reproduce through the closest end-user path, and record evidence before fixing."
     else emit_continue; fi
     ;;
   Stop)
     if [[ "$response_invalid" == 1 ]]; then
-      emit_block "Final responses must use English or Hinglish and plain dash characters. Remove Hindi Unicode characters and the em dash before completing."
+      emit_block "Final responses must use English or Hinglish and plain dash characters. Remove Hindi/Urdu/non-Latin Unicode characters and the em dash before completing."
       exit 0
     fi
     if [[ -z "$session" ]]; then
-      # Direct Claude launches do not own an EOS lifecycle session. They may
+      # Direct Claude/Antigravity launches do not own an EOS lifecycle session. They may
       # audit a registered workspace, but must not create orphan hook sessions.
-      if [[ -x "$kb" ]]; then "$kb" audit "${kb_args[@]}" --source-root "${PWD:-.}" --json >/dev/null 2>&1 || true; fi
+      if [[ -x "$kb" ]]; then "$kb" audit "${kb_args[@]}" --source-root "$hook_cwd" --json >/dev/null 2>&1 || true; fi
       emit_continue
       exit 0
     fi
@@ -134,24 +275,34 @@ except Exception: print("")')"
       "$kb" "${resume_args[@]}" "${kb_args[@]}" --json >/dev/null 2>&1 || true
       if ! "$kb" checkpoint "${kb_args[@]}" --session "$session" --json >/dev/null 2>&1; then
         if printf '%s' "$prompt_text" | grep -Eiq '\b(blocked|blocker)\b'; then
-          printf '%s\n' '{"continue":true,"message":"Recorded blocker accepted; report blocked work with the blocker and next required input."}'
+          emit_message "Recorded blocker accepted; report blocked work with the blocker and next required input."
         else
           emit_block "Checkpoint is required before completion. Run kb checkpoint and resolve any reported validation or investigation gate."
         fi
         exit 0
       fi
     fi
-    if [[ -x "$kb" ]]; then "$kb" audit "${kb_args[@]}" --source-root "${PWD:-.}" --json >/dev/null 2>&1 || true; fi
+    if [[ -x "$kb" ]]; then "$kb" audit "${kb_args[@]}" --source-root "$hook_cwd" --json >/dev/null 2>&1 || true; fi
     emit_continue
     ;;
   SessionStart)
-    if [[ -x "$kb" ]]; then "$kb" audit "${kb_args[@]}" --source-root "${PWD:-.}" --json >/dev/null 2>&1 || true; fi
+    if [[ -x "$kb" ]]; then "$kb" audit "${kb_args[@]}" --source-root "$hook_cwd" --json >/dev/null 2>&1 || true; fi
     personal_root="${EOS_PERSONAL_KNOWLEDGE_DIR:-${EOS_PERSONAL_KNOWLEDGE_ROOT:-$HOME/personal/knowledge}}"
     work_root="${EOS_WORK_KNOWLEDGE_ROOT:-$HOME/work/knowledge}"
     active_profile="${EOS_AGENT_PROFILE:-}"
     active_root="${EOS_KB_ROOT:-}"
-    if [[ -z "$active_profile" ]]; then
-      case "${PWD:-}" in "$HOME/work"|"$HOME/work/"*) active_profile=work ;; "$HOME/personal"|"$HOME/personal/"*) active_profile=personal ;; esac
+    if [[ "$active_profile" != work && "$active_profile" != personal ]]; then
+      case "$hook_cwd" in
+        "$HOME/work"|"$HOME/work/"*) active_profile=work ;;
+        "$HOME/personal"|"$HOME/personal/"*) active_profile=personal ;;
+        *)
+          if [[ -n "$active_root" && "$active_root" == "$work_root" ]]; then
+            active_profile=work
+          elif [[ -n "$active_root" ]]; then
+            active_profile=personal
+          fi
+          ;;
+      esac
     fi
     if [[ -z "$active_root" ]]; then
       case "$active_profile" in work) active_root="$work_root" ;; personal) active_root="$personal_root" ;; esac
@@ -160,26 +311,25 @@ except Exception: print("")')"
     if [[ -x "$reminder" && -n "$active_root" && ( "$active_profile" == work || "$active_profile" == personal ) ]]; then
       reminder_output="$(EOS_CAPTURE_PROFILE="$active_profile" EOS_CAPTURE_KB_ROOT="$active_root" "$reminder" --json 2>/dev/null || true)"
       if [[ -n "$reminder_output" ]]; then
-        printf '%s' "$reminder_output" | jq --arg contract "$discussion_contract" '
-          .additional_context = ((.additional_context // "") + "\n" + $contract) |
-          .hookSpecificOutput.additionalContext = ((.hookSpecificOutput.additionalContext // "") + "\n" + $contract)'
+        if [[ "$agent_flavor" == "claude" ]]; then
+          printf '%s' "$reminder_output" | jq --arg contract "$discussion_contract" '
+            .additional_context = ((.additional_context // "") + "\n" + $contract) |
+            .hookSpecificOutput.additionalContext = ((.hookSpecificOutput.additionalContext // "") + "\n" + $contract)'
+        else
+          combined_msg="$(printf '%s' "$reminder_output" | jq -r --arg contract "$discussion_contract" '((.hookSpecificOutput.additionalContext // .additional_context // "") + "\n" + $contract)')"
+          emit_message "$combined_msg"
+        fi
         exit 0
       fi
     fi
-    python3 - "$discussion_contract" <<'PY'
-import json, sys
-print(json.dumps({"continue": True, "message": sys.argv[1]}))
-PY
+    emit_message "$discussion_contract"
     ;;
   PostCompact)
-    if [[ -x "$kb" ]]; then "$kb" audit "${kb_args[@]}" --source-root "${PWD:-.}" --json >/dev/null 2>&1 || true; fi
-    python3 - "$discussion_contract" <<'PY'
-import json, sys
-print(json.dumps({"continue": True, "message": "Context compacted. " + sys.argv[1]}))
-PY
+    if [[ -x "$kb" ]]; then "$kb" audit "${kb_args[@]}" --source-root "$hook_cwd" --json >/dev/null 2>&1 || true; fi
+    emit_message "Context compacted. $discussion_contract"
     ;;
   SessionEnd|PreCompact)
-    if [[ -x "$kb" ]]; then "$kb" audit "${kb_args[@]}" --source-root "${PWD:-.}" --json >/dev/null 2>&1 || true; fi
+    if [[ -x "$kb" ]]; then "$kb" audit "${kb_args[@]}" --source-root "$hook_cwd" --json >/dev/null 2>&1 || true; fi
     emit_continue
     ;;
   InstructionsLoaded|PostToolUse|*)

@@ -82,7 +82,7 @@ for base in "${skill_bases[@]}"; do
   done < <(skill_names)
 done
 
-if [[ "$target_agent" == all || "$target_agent" == claude ]]; then
+if [[ "$target_agent" == all || "$target_agent" == claude || "$target_agent" == codex || "$target_agent" == gemini ]]; then
   EOS_ROOT="$ROOT" "$ROOT/scripts/merge-agent-settings"
 fi
 

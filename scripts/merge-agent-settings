@@ -49,4 +49,68 @@ PY
 for profile in .claude .claude-work .claude-personal; do
   merge_one "$HOME/$profile/settings.json"
 done
-echo "Claude settings merged"
+
+merge_codex() {
+  local target="$1"
+  mkdir -p "$(dirname "$target")"
+  EOS_HOOK="$hook" EOS_PERSONAL_KB_CAPTURE="$capture" python3 - "$target" "$fragment" <<'PY'
+import json, os, pathlib, sys
+target, fragment = map(pathlib.Path, sys.argv[1:])
+try:
+    data = json.loads(target.read_text()) if target.exists() else {}
+except (OSError, json.JSONDecodeError) as exc:
+    raise SystemExit(f"invalid Codex hooks {target}: {exc}")
+frag = json.loads(fragment.read_text())
+hooks = data.setdefault("hooks", {})
+hooks.pop("InstructionsLoaded", None)
+codex_events = ("SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PreCompact", "PostCompact", "Stop", "SessionEnd")
+for event in codex_events:
+    entries = frag["hooks"].get(event, [])
+    rendered = json.loads(
+        json.dumps(entries)
+        .replace("__EOS_AGENT_HOOK__", f"EOS_HOOK_AGENT=codex {os.environ['EOS_HOOK']}")
+        .replace("__EOS_PERSONAL_KB_CAPTURE__", os.environ["EOS_PERSONAL_KB_CAPTURE"])
+    )
+    cleaned = [
+        entry for entry in hooks.get(event, [])
+        if not any(
+            os.environ["EOS_HOOK"] in h.get("command", "") or "eos-kb-capture" in h.get("command", "") or "personal-kb-capture" in h.get("command", "")
+            for h in entry.get("hooks", [])
+        )
+    ]
+    for entry in rendered:
+        if entry not in cleaned:
+            cleaned.append(entry)
+    hooks[event] = cleaned
+target.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+PY
+}
+
+for profile in .codex .codex-work .codex-personal; do
+  merge_codex "$HOME/$profile/hooks.json"
+done
+
+merge_antigravity() {
+  local target="$1"
+  mkdir -p "$(dirname "$target")"
+  EOS_HOOK="$hook" python3 - "$target" <<'PY'
+import json, os, pathlib, sys
+target = pathlib.Path(sys.argv[1])
+try:
+    data = json.loads(target.read_text()) if target.exists() else {}
+except (OSError, json.JSONDecodeError) as exc:
+    raise SystemExit(f"invalid Antigravity hooks {target}: {exc}")
+hook_cmd = f"EOS_HOOK_AGENT=antigravity {os.environ['EOS_HOOK']}"
+data["eos"] = {
+    "SessionStart": [{"type": "command", "command": f"{hook_cmd} SessionStart"}],
+    "PreInvocation": [{"type": "command", "command": f"{hook_cmd} PreInvocation"}],
+    "PreToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": f"{hook_cmd} PreToolUse"}]}],
+    "PostToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": f"{hook_cmd} PostToolUse"}]}],
+    "Stop": [{"type": "command", "command": f"{hook_cmd} Stop"}],
+}
+target.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+PY
+}
+
+merge_antigravity "$HOME/.gemini/config/hooks.json"
+echo "Claude, Codex, and Antigravity settings merged"

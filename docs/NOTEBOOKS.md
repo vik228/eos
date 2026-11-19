@@ -133,6 +133,14 @@ Large or private datasets belong on Drive or GCS, not in per-save sync. Every
 new notebook starts from a template with instructions, a data skeleton, and
 an empty code cell; fill in the data URL and press `:ColabData`.
 
+### Drive mount
+
+Do not mount Drive through a `!`-prefixed cell (`!colab drivemount` or
+`drive.mount()` behind `!`): there is no TTY for the OAuth grant, so it fails
+silently with exit 0. Run `:ColabDrive` once per runtime instead (terminal
+split with browser consent, then verified), and use
+`/content/drive/MyDrive` from cells.
+
 ## Colab GPU Kernels
 
 nvim stays local; only the kernel can move to Colab (see ADR 0007). Setup once:
