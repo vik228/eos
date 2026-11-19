@@ -8,4 +8,7 @@ windows:
   - { name: tests, command: zsh }
   - { name: python, command: python3 }
   - { name: notes, command: zsh }
+  - { name: claude, command: 'claude-personal; exec zsh' }
+  - { name: codex, command: 'codex-personal; exec zsh' }
+  - { name: antigravity, command: 'antigravity-full; exec zsh' }
   - { name: shell, command: zsh }
