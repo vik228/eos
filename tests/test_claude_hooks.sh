@@ -2,6 +2,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Hermetic: a launcher-exported EOS_* profile must not steer hook routing.
+while IFS= read -r name; do unset "$name"; done < <(compgen -e | grep '^EOS_' || true)
 HOOK="$ROOT/configs/agents/claude/hooks/eos-agent-hook"
 [[ -x "$HOOK" ]]
 em_dash="$(printf '\342\200\224')"
@@ -64,6 +66,42 @@ urdu_response="$(event Stop '{"hook_event_name":"Stop","last_assistant_message":
 grep -q '"decision": "block"' <<<"$urdu_response"
 devanagari_response="$(event Stop '{"hook_event_name":"Stop","last_assistant_message":"yeh \u091c\u093e\u0928\u0947 galat hai"}')"
 grep -q '"decision": "block"' <<<"$devanagari_response"
+
+# Claude hook output contract: Claude Code reads only documented output
+# fields. Context must arrive as hookSpecificOutput.additionalContext on
+# SessionStart (every source, including clear and compact, with an empty
+# queue) and UserPromptSubmit; other events use systemMessage. An unknown key
+# such as "message" is silently dropped, so it must never be emitted.
+cat >"$tmp/claude_json.py" <<'PY'
+import json, sys
+mode, ev, needle = sys.argv[1], sys.argv[2], sys.argv[3]
+out = json.loads(sys.stdin.read())
+assert "message" not in out, out
+if mode == "context":
+    hso = out["hookSpecificOutput"]
+    assert hso["hookEventName"] == ev, out
+    assert needle in hso["additionalContext"], out
+else:
+    assert needle in out["systemMessage"], out
+    assert "hookSpecificOutput" not in out, out
+PY
+claude_json() { python3 "$tmp/claude_json.py" "$@"; }
+empty_kb="$tmp/empty-kb"
+mkdir -p "$empty_kb"
+for source in startup resume clear compact; do
+  printf '%s' "{\"hook_event_name\":\"SessionStart\",\"source\":\"$source\",\"session_id\":\"c1\",\"transcript_path\":\"$tmp/t.jsonl\",\"cwd\":\"$tmp\"}" | \
+    EOS_KB_BIN="$tmp/kb" HOOK_TEST_LOG="$log" EOS_KB_ROOT="$empty_kb" EOS_AGENT_PROFILE=work \
+    EOS_WORK_KNOWLEDGE_ROOT="$empty_kb" EOS_AGENT_SESSION_ID=s1 "$HOOK" SessionStart | \
+    claude_json context SessionStart 'Every discussion uses the global interaction contract'
+done
+event SessionStart '{"hook_event_name":"SessionStart","source":"clear"}' | \
+  claude_json context SessionStart 'pending personal KB proposal'
+event UserPromptSubmit '{"hook_event_name":"UserPromptSubmit","prompt":"fix this regression"}' | \
+  claude_json context UserPromptSubmit 'kb bug start'
+event UserPromptSubmit '{"hook_event_name":"UserPromptSubmit","prompt":"lets discuss evaluation strategy"}' | \
+  claude_json context UserPromptSubmit 'Branching discussion detected'
+event PostCompact '{"hook_event_name":"PostCompact","trigger":"manual"}' | \
+  claude_json system PostCompact 'Every discussion uses the global interaction contract'
 
 # Antigravity hook contract tests
 agy_transcript="$tmp/agy-transcript.jsonl"
