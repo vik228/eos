@@ -438,6 +438,7 @@ def tool_agent_start(
     cwd: str,
     agent: str = "claude",
     permission_mode: str | None = None,
+    tmux_profile: str | None = None,
 ) -> dict[str, Any]:
     try:
         meta = start_remote_agent(
@@ -447,12 +448,19 @@ def tool_agent_start(
             cwd=cwd,
             agent=agent,
             permission_mode=permission_mode,
+            tmux_profile=tmux_profile,
         )
     except RemoteAgentError as exc:
         raise McpToolError(str(exc)) from exc
+    tmux_line = (
+        f"- tmux window: `{meta['tmux_window']}` in session `{meta['tmux_session']}` (socket `-L {meta['tmux_socket']}`)\n"
+        if meta.get("tmux_window")
+        else ""
+    )
     text = (
         f"Started {meta['agent']} session **{meta['name']}** (`{meta['run_id']}`)\n"
         f"- Profile: `{profile}` | CWD: `{meta['cwd']}`\n"
+        f"{tmux_line}"
         f"- Session ID: `{meta['session_id']}`\n"
         f"- Resume locally later: `{meta['resume_command']}`\n"
         f"Use `agent_status` or `agent_logs` with `run_id='{meta['run_id']}'` to monitor progress."
@@ -681,6 +689,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     "default": "claude",
                 },
                 "permission_mode": {"type": "string", "description": "Optional Claude permission mode override (e.g. plan, auto)."},
+                "tmux_profile": {"type": "string", "description": "Optional EOS tmux workspace profile name (defaults to 'backend' for work, 'research' for personal)."},
             },
             "required": ["name", "prompt", "cwd"],
         },
@@ -820,6 +829,7 @@ def dispatch_tool(kb_root: Path, profile: str, name: str, arguments: dict[str, A
             cwd=str(args.get("cwd") or ""),
             agent=str(args.get("agent") or "claude"),
             permission_mode=args.get("permission_mode"),
+            tmux_profile=args.get("tmux_profile"),
         )
     if name == "agent_list":
         return tool_agent_list(kb_root, profile, limit=int(args.get("limit", 10)))

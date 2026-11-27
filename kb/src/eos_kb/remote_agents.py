@@ -6,6 +6,8 @@ import datetime as dt
 import json
 import os
 import re
+import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -250,6 +252,27 @@ def _sync_live_state(run_dir: Path) -> dict[str, Any]:
     return meta
 
 
+def _default_tmux_profile(profile: str) -> str:
+    if profile == "work":
+        return os.environ.get("EOS_MCP_WORK_TMUX_PROFILE", "backend").strip()
+    if profile == "personal":
+        return os.environ.get("EOS_MCP_PERSONAL_TMUX_PROFILE", "research").strip()
+    return ""
+
+
+def _tmux_session_exists(socket_name: str, session_name: str) -> bool:
+    tmux_bin = shutil.which("tmux")
+    if not tmux_bin:
+        return False
+    res = subprocess.run(
+        [tmux_bin, "-L", socket_name, "has-session", "-t", session_name],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return res.returncode == 0
+
+
 def start_remote_agent(
     profile: str,
     *,
@@ -258,6 +281,7 @@ def start_remote_agent(
     cwd: str,
     agent: str = "claude",
     permission_mode: str | None = None,
+    tmux_profile: str | None = None,
     command_override: list[str] | None = None,
 ) -> dict[str, Any]:
     agent_clean = (agent or "claude").strip().lower()
@@ -295,6 +319,16 @@ def start_remote_agent(
             permission_mode=permission_mode,
         )
 
+    target_tmux = (tmux_profile or _default_tmux_profile(profile)).strip()
+    tmux_socket = f"eos-{target_tmux}" if target_tmux else None
+    use_tmux = (
+        command_override is None
+        and os.environ.get("EOS_REMOTE_AGENTS_NO_TMUX") != "1"
+        and bool(tmux_socket and target_tmux)
+        and _tmux_session_exists(tmux_socket, target_tmux)
+    )
+    window_name = _slugify(name_clean)[:24] if use_tmux else None
+
     meta: dict[str, Any] = {
         "run_id": run_id,
         "profile": profile,
@@ -309,16 +343,77 @@ def start_remote_agent(
         "ended_at": None,
         "exit_code": None,
         "resume_command": resume_cmd,
+        "tmux_socket": tmux_socket if use_tmux else None,
+        "tmux_session": target_tmux if use_tmux else None,
+        "tmux_window": window_name,
         "turns": 1,
         "cmd": cmd,
         "extra_env": extra_env,
     }
     _write_meta(run_dir, meta)
 
-    proc = _spawn_detached_runner(run_dir)
-    meta["pid"] = proc.pid
+    if use_tmux and tmux_socket and window_name:
+        pane_pid = _spawn_in_tmux(
+            run_dir,
+            socket_name=tmux_socket,
+            session_name=target_tmux,
+            window_name=window_name,
+            cwd=resolved_cwd,
+            resume_cmd=resume_cmd,
+        )
+        meta["pid"] = pane_pid
+    else:
+        proc = _spawn_detached_runner(run_dir)
+        meta["pid"] = proc.pid
     _write_meta(run_dir, meta)
     return meta
+
+
+def _spawn_in_tmux(
+    run_dir: Path,
+    *,
+    socket_name: str,
+    session_name: str,
+    window_name: str,
+    cwd: Path,
+    resume_cmd: str,
+) -> int | None:
+    tmux_bin = shutil.which("tmux") or "tmux"
+    pkg_parent = str(Path(__file__).resolve().parent.parent)
+    py_cmd = (
+        f"PYTHONPATH={shlex.quote(pkg_parent)}:${{PYTHONPATH:-}} "
+        f"{shlex.quote(sys.executable)} -m eos_kb.remote_agents _exec {shlex.quote(str(run_dir))}"
+    )
+    shell_cmd = (
+        f"{py_cmd}; "
+        f"echo; echo '=== Remote turn finished ==='; "
+        f"echo 'Resume interactively: {resume_cmd}'; "
+        f"exec ${{SHELL:-/bin/zsh}} -l"
+    )
+    res = subprocess.run(
+        [
+            tmux_bin,
+            "-L",
+            socket_name,
+            "new-window",
+            "-d",
+            "-P",
+            "-F",
+            "#{pane_pid}",
+            "-t",
+            session_name,
+            "-n",
+            window_name,
+            "-c",
+            str(cwd),
+            shell_cmd,
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    raw_pid = res.stdout.strip()
+    return int(raw_pid) if raw_pid.isdigit() else None
 
 
 def _spawn_detached_runner(run_dir: Path) -> subprocess.Popen[bytes]:
