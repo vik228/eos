@@ -2,6 +2,16 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Ensure EOS scripts, user-local tools (uv, agy), mise shims, and nvm node/claude are on PATH under launchd/systemd.
+extra_paths=("$ROOT/bin/guards" "$ROOT/scripts" "$ROOT/bin" "$HOME/.local/bin" "$HOME/.local/share/mise/shims")
+if [[ -d "$HOME/.nvm/versions/node" ]]; then
+  latest_nvm_bin="$(ls -d "$HOME"/.nvm/versions/node/*/bin 2>/dev/null | sort -V | tail -n 1 || true)"
+  [[ -n "$latest_nvm_bin" ]] && extra_paths+=("$latest_nvm_bin")
+fi
+for p in "${extra_paths[@]}"; do
+  [[ -d "$p" && ":$PATH:" != *":$p:"* ]] && PATH="$p:$PATH"
+done
+export PATH
 set -a
 source "$ROOT/scripts/lib-eos-config.sh"
 set +a
