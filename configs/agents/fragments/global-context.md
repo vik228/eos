@@ -7,6 +7,7 @@
 - Durable knowledge belongs in the shared KB, never private agent memory or scratchpads.
 - Review pending KB proposals with the user before applying stable changes.
 - Route every pending proposal by its target subject, not by the current working directory. At session start, read all registered non-empty queues only from the active profile's KB root: work sessions read work queues and personal sessions read personal queues.
+- When launching another agent harness (Codex, Claude, or any other) to do work, pick the model and reasoning effort explicitly for that task (small chore, cross-check, large design, security-heavy review). Never rely on the profile default model, which may have been set for a discussion. Pick only models available in the matching profile: work models for work, personal for personal. This applies to every harness, independent of the active profile.
 
 Relevant skills:
 - `configs/agents/skills/branching-discussion/SKILL.md`

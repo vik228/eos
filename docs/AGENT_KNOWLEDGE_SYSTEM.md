@@ -115,6 +115,56 @@ Personal capture deduplicates unchecked proposal blocks before and after each
 capture event. It keeps the first open occurrence and treats line wrapping as
 non-semantic.
 
+## KB CLI gotchas
+
+- `kb propose` needs an active session record first (`kb session start --cwd
+  <workspace> --agent <agent> --profile <profile> --native-id <id>`). Session
+  leases expire after about 5 minutes (`lease_seconds` defaults to 300 in
+  `kb/src/eos_kb/sessions.py`; `kb checkpoint` does not renew the lease, it
+  only records `updated_at`). Before a long flow, checkpoint, or resume the
+  session (`kb session resume <id>`) and retry.
+- The proposal file is a YAML mapping with required keys `summary`,
+  `evidence`, `source_paths`, `confidence`, `known_gaps`,
+  `suggested_freshness`, `conflicts`, and `result_content` holding the full
+  target file (schema: `kb/src/eos_kb/governance.py`, `capture_proposal`).
+  Plain Markdown fails as "not valid YAML". An unreadable path fails as
+  "Proposal input is not readable: <os error>", and a wrong shape fails as
+  "Proposal input is missing required fields" without naming which keys are
+  missing. Paths resolve against the invoker's working directory; stage the
+  file where the command runs (for example under `<kb>/.eos/tmp/`, which the
+  indexer excludes) and pass the path accordingly.
+- Promotion order matters: `kb promote` rebuilds the index from the
+  candidate result and fails with `governance.result_invalid` on a broken
+  link, so promote a linked-to file before the file that links to it.
+- `kb context` has a mandatory base package (query envelope plus warnings,
+  zero cards) that must fit the budget. Small `--budget` values fail with
+  `context.budget_too_small` on `$.budget`, naming the required units; the
+  floor rises with the warning count.
+- The PreToolUse hook exempts only root `logs/` and
+  `_pending-kb-updates.md` files. Per-project `logs/` directories (for
+  example `projects/<slug>/logs/`) are still blocked as direct writes - open
+  question whether they should be exempt too.
+
+## Lifecycle and Stop hook behavior
+
+- The Stop hook runs `kb checkpoint --session "$EOS_AGENT_SESSION_ID"`: the
+  EOS session id carried by the wrapper, not the Claude session id (which is
+  used only for `kb session resume --native-id`). A long-running agent that
+  outlives its lease is resumed and retried once automatically. Direct
+  launches with no EOS session only audit; they never checkpoint.
+- Only confirmed stale evidence and contradictions block `kb checkpoint` and
+  `kb session end`; `unknown` findings stay visible in audit output but never
+  block (`kb/src/eos_kb/cli.py`, `_lifecycle_audit`). A concept past its
+  `stale_after` blocks even when no proposal is open for it: pending queues
+  are indexed like any other concept, and the time check does not consider
+  checkbox state.
+- `kb index` keeps the old index when validation fails: a YAML error (for
+  example an unquoted `: ` in a title) returns the current database
+  untouched, so a fixed `stale_after` date is not seen until the YAML error
+  is fixed and the KB is reindexed (`kb/src/eos_kb/indexer.py`,
+  `index_bundle`). Freshness reads `stale_after` from the index database, not
+  from the files.
+
 The global discussion contract is rendered for every supported agent and is
 independent of repository identity. Claude refreshes it through SessionStart
 and PostCompact hooks; other transports retain it through their generated
