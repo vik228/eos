@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ "${1:-}" != "--dry-run" && "${1:-}" != "--eos-adherence-prompt" ]]; then
+if [[ "${EOS_ALLOW_PERSONAL_AGENT_IN_WORK:-0}" != 1 && " $* " != *" --dry-run "* ]]; then
   echo "Error: OpenCode usage is restricted in the work profile." >&2
   exit 1
 fi

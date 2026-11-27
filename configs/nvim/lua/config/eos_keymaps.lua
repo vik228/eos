@@ -39,7 +39,6 @@ M.config = {
       work = {
         claude = 'claude-work; exec zsh',
         codex = 'codex-work; exec zsh',
-        antigravity = "antigravity-full; exec zsh",
       },
       personal = {
         claude = "claude-personal; exec zsh",

@@ -34,7 +34,7 @@ backend_output="$("$ROOT/scripts/backend" --dry-run)"
 [[ "$backend_output" == *"window=claude:claude-work; exec zsh"* ]]
 [[ "$backend_output" == *"codex-work"* ]]
 [[ "$backend_output" == *"codex-work; exec zsh"* ]]
-[[ "$backend_output" == *"antigravity-full; exec zsh"* ]]
+[[ "$backend_output" != *"antigravity-full; exec zsh"* ]]
 tmp_backend_dir="$(mktemp -d)"
 backend_override_output="$(EOS_BACKEND_DIR="$tmp_backend_dir" "$ROOT/scripts/backend" --dry-run)"
 [[ "$backend_override_output" == *"directory=$tmp_backend_dir"* ]]

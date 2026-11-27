@@ -115,10 +115,108 @@ EOS_ALLOW_PERSONAL_AGENT_IN_WORK=1 "$script" start --dry-run --agent opencode --
 [[ "$("$script" start --dry-run --agent antigravity --brief "$brief" --worktree "$repo" 2>&1 || true)" == *"use codex or claude"* ]]
 EOS_ALLOW_PERSONAL_AGENT_IN_WORK=1 "$script" start --dry-run --agent antigravity --profile work \
   --brief "$brief" --worktree "$repo" >/dev/null 2>&1
-# the antigravity wrapper itself refuses inside the work tree (dry-run is exempt so it stays testable)
+# ---- single-account work-tree guards (stubs so a guard regression can never launch a real agent) ----
 work_tree="$tmp/work/proj"; mkdir -p "$work_tree"
-! EOS_WORK_ROOT="$tmp/work" EOS_AGENT_CWD="$work_tree" "$ROOT/scripts/antigravity-full" --help >/dev/null 2>&1
-EOS_WORK_ROOT="$tmp/work" EOS_AGENT_CWD="$work_tree" "$ROOT/scripts/antigravity-full" --dry-run >/dev/null 2>&1 || true
+work_tree_phys="$(cd "$work_tree" && pwd -P)"
+stub_agent="$tmp/stub-agent"; stub_kb="$tmp/stub-kb"; stub_home="$tmp/home"
+mkdir -p "$stub_home"
+cat > "$stub_agent" <<'EOF'
+#!/usr/bin/env bash
+printf 'LAUNCHED %s\n' "$*" >> "${STUB_AGENT_LOG:?}"
+EOF
+cat > "$stub_kb" <<'EOF'
+#!/usr/bin/env bash
+printf '{"data":{"session_id":"stub"},"status":"ok","exit_code":0}\n'
+EOF
+chmod +x "$stub_agent" "$stub_kb"
+export STUB_AGENT_LOG="$tmp/stub-agent.log"
+: > "$STUB_AGENT_LOG"
+mkdir -p "$tmp/personal-kb/logs" "$tmp/work-kb/logs" "$tmp/scratch"
+# guard_env must precede every direct wrapper invocation below: isolated HOME
+# and KB roots, stub agent/kb bins, no real doctor, so a guard regression
+# launches the stub instead of a real agent session.
+guard_env=(env "EOS_ROOT=$ROOT" "HOME=$stub_home" "EOS_AGENT_DOCTOR=:" "EOS_AGENT_BIN=$stub_agent" "EOS_KB_BIN=$stub_kb"
+  "EOS_PERSONAL_KNOWLEDGE_ROOT=$tmp/personal-kb" "EOS_WORK_KNOWLEDGE_ROOT=$tmp/work-kb" "EOS_KB_ROOT=$tmp/personal-kb")
+
+# antigravity-full refuses inside the work tree and names the path
+if out="$("${guard_env[@]}" EOS_WORK_ROOT="$tmp/work" EOS_AGENT_CWD="$work_tree" "$ROOT/scripts/antigravity-full" --print "hello" 2>&1)"; then
+  echo "antigravity-full should refuse the work tree"; exit 1
+fi
+[[ "$out" == *"must not run from the work tree"* ]]
+[[ "$out" == *"$work_tree_phys"* ]]
+[[ ! -s "$STUB_AGENT_LOG" ]]
+# trailing slash in EOS_WORK_ROOT must not bypass the guard
+! "${guard_env[@]}" EOS_WORK_ROOT="$tmp/work/" EOS_AGENT_CWD="$work_tree" "$ROOT/scripts/antigravity-full" --print "hello" >/dev/null 2>&1
+[[ ! -s "$STUB_AGENT_LOG" ]]
+# a symlinked path into the work tree must not bypass the guard
+ln -s "$tmp/work" "$tmp/wlink"
+! "${guard_env[@]}" EOS_WORK_ROOT="$tmp/work" EOS_AGENT_CWD="$tmp/wlink/proj" "$ROOT/scripts/antigravity-full" --print "hello" >/dev/null 2>&1
+[[ ! -s "$STUB_AGENT_LOG" ]]
+# the work KB root also refuses from a personal cwd
+if out="$("${guard_env[@]}" EOS_WORK_ROOT="$tmp/work" EOS_AGENT_CWD="$tmp/scratch" EOS_KB_ROOT="$tmp/work-kb" "$ROOT/scripts/antigravity-full" --print "hello" 2>&1)"; then
+  echo "antigravity-full should refuse the work KB"; exit 1
+fi
+[[ "$out" == *"must not run from the work tree"* ]]
+[[ ! -s "$STUB_AGENT_LOG" ]]
+# single-KB setup (same path for both KBs): the KB clause is skipped, cwd decides
+"${guard_env[@]}" EOS_WORK_ROOT="$tmp/work" EOS_AGENT_CWD="$tmp/scratch" EOS_KB_ROOT="$tmp/kb" \
+  EOS_PERSONAL_KNOWLEDGE_ROOT="$tmp/kb" EOS_WORK_KNOWLEDGE_ROOT="$tmp/kb" \
+  "$ROOT/scripts/antigravity-full" --print "hello" >/dev/null 2>&1
+grep -q LAUNCHED "$STUB_AGENT_LOG"
+: > "$STUB_AGENT_LOG"
+# dry-run is exempt anywhere in args and must exit 0
+"${guard_env[@]}" EOS_WORK_ROOT="$tmp/work" EOS_AGENT_CWD="$work_tree" "$ROOT/scripts/antigravity-full" --dry-run >/dev/null 2>&1
+"${guard_env[@]}" EOS_WORK_ROOT="$tmp/work" EOS_AGENT_CWD="$work_tree" "$ROOT/scripts/antigravity-full" --model m1 --dry-run --print "hello" >/dev/null 2>&1
+[[ ! -s "$STUB_AGENT_LOG" ]]
+# the documented override works for the wrapper
+"${guard_env[@]}" EOS_WORK_ROOT="$tmp/work" EOS_AGENT_CWD="$work_tree" EOS_ALLOW_PERSONAL_AGENT_IN_WORK=1 \
+  "$ROOT/scripts/antigravity-full" --print "hello" >/dev/null 2>&1
+grep -q LAUNCHED "$STUB_AGENT_LOG"
+: > "$STUB_AGENT_LOG"
+
+# opencode-personal refuses inside the work tree too and names the path
+if out="$("${guard_env[@]}" EOS_WORK_ROOT="$tmp/work" EOS_AGENT_CWD="$work_tree" "$ROOT/scripts/opencode-personal" run "hello" 2>&1)"; then
+  echo "opencode-personal should refuse the work tree"; exit 1
+fi
+[[ "$out" == *"must not run from the work tree"* ]]
+[[ "$out" == *"$work_tree_phys"* ]]
+[[ ! -s "$STUB_AGENT_LOG" ]]
+! "${guard_env[@]}" EOS_WORK_ROOT="$tmp/work/" EOS_AGENT_CWD="$work_tree" "$ROOT/scripts/opencode-personal" run "hello" >/dev/null 2>&1
+! "${guard_env[@]}" EOS_WORK_ROOT="$tmp/work" EOS_AGENT_CWD="$tmp/wlink/proj" "$ROOT/scripts/opencode-personal" run "hello" >/dev/null 2>&1
+[[ ! -s "$STUB_AGENT_LOG" ]]
+"${guard_env[@]}" EOS_WORK_ROOT="$tmp/work" EOS_AGENT_CWD="$work_tree" "$ROOT/scripts/opencode-personal" --dry-run >/dev/null 2>&1
+"${guard_env[@]}" EOS_WORK_ROOT="$tmp/work" EOS_AGENT_CWD="$work_tree" EOS_ALLOW_PERSONAL_AGENT_IN_WORK=1 \
+  "$ROOT/scripts/opencode-personal" run "hello" >/dev/null 2>&1
+grep -q LAUNCHED "$STUB_AGENT_LOG"
+: > "$STUB_AGENT_LOG"
+
+# opencode-work stays hard-refuse by default but honors the documented override
+! "${guard_env[@]}" EOS_WORK_ROOT="$tmp/work" EOS_AGENT_CWD="$tmp/scratch" "$ROOT/scripts/opencode-work" run "hello" >/dev/null 2>&1
+[[ ! -s "$STUB_AGENT_LOG" ]]
+"${guard_env[@]}" EOS_WORK_ROOT="$tmp/work" EOS_AGENT_CWD="$tmp/scratch" "$ROOT/scripts/opencode-work" --dry-run >/dev/null 2>&1
+"${guard_env[@]}" EOS_WORK_ROOT="$tmp/work" EOS_AGENT_CWD="$tmp/scratch" EOS_ALLOW_PERSONAL_AGENT_IN_WORK=1 \
+  "$ROOT/scripts/opencode-work" run "hello" >/dev/null 2>&1
+grep -q LAUNCHED "$STUB_AGENT_LOG"
+: > "$STUB_AGENT_LOG"
+
+# agent-run refuses --agent antigravity|opencode with a worktree under the work
+# root even for --profile personal (dry-run is in the check path, creates nothing)
+for wt_agent in antigravity opencode; do
+  if out="$(EOS_WORK_ROOT="$tmp/work" "$script" start --dry-run --agent "$wt_agent" --profile personal \
+      --brief "$brief" --worktree "$work_tree" 2>&1)"; then
+    echo "agent-run should refuse $wt_agent in the work tree"; exit 1
+  fi
+  [[ "$out" == *"must not run inside the work tree"* ]]
+  [[ "$out" == *"$work_tree_phys"* ]]
+  # trailing slash and symlinked worktree variants refuse too
+  ! EOS_WORK_ROOT="$tmp/work/" "$script" start --dry-run --agent "$wt_agent" --profile personal \
+    --brief "$brief" --worktree "$work_tree" >/dev/null 2>&1
+  ! EOS_WORK_ROOT="$tmp/work" "$script" start --dry-run --agent "$wt_agent" --profile personal \
+    --brief "$brief" --worktree "$tmp/wlink/proj" >/dev/null 2>&1
+  # the documented override lets the dry-run through
+  EOS_WORK_ROOT="$tmp/work" EOS_ALLOW_PERSONAL_AGENT_IN_WORK=1 "$script" start --dry-run --agent "$wt_agent" --profile personal \
+    --brief "$brief" --worktree "$work_tree" >/dev/null 2>&1
+done
 
 # dry-run leaves no run directory behind
 [[ -z "$(ls -A "$EOS_AGENT_RUNS_DIR" 2>/dev/null)" ]]

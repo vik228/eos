@@ -4,6 +4,25 @@ set -euo pipefail
 ROOT="${EOS_ROOT:-$HOME/personal/eos}"
 source "$ROOT/scripts/lib-agent-session.sh"
 cwd="${EOS_AGENT_CWD:-$PWD}"
+# OpenCode personal holds a single account (the personal one). Refuse to start
+# inside the work tree unless explicitly overridden. Mirrors antigravity-full
+# and bin/guards/codex: both sides canonicalized with pwd -P.
+resolve_dir() {
+  (cd "$1" 2>/dev/null && pwd -P) || printf '%s' "$1"
+}
+strip_slash() {
+  local d="$1"
+  while [[ "$d" != "/" && "$d" == */ ]]; do d="${d%/}"; done
+  printf '%s' "$d"
+}
+work_root="$(strip_slash "$(resolve_dir "${EOS_WORK_ROOT:-$HOME/work}")")"
+cwd_phys="$(strip_slash "$(resolve_dir "$cwd")")"
+dry_run=0
+[[ " $* " == *" --dry-run "* ]] && dry_run=1
+if [[ ( "$cwd_phys" == "$work_root" || "$cwd_phys" == "$work_root/"* ) && "${EOS_ALLOW_PERSONAL_AGENT_IN_WORK:-0}" != 1 && "$dry_run" == 0 ]]; then
+  echo "opencode-personal: OpenCode personal is a single-account (personal) agent and must not run from the work tree ($cwd_phys). Use codex-work or claude-work; override with EOS_ALLOW_PERSONAL_AGENT_IN_WORK=1." >&2
+  exit 1
+fi
 kb="${EOS_PERSONAL_KNOWLEDGE_ROOT:-$HOME/personal/knowledge}"
 bin="${EOS_AGENT_BIN:-${OPENCODE_BIN:-$HOME/personal/eos/bin/opencode}}"
 mode="${OPENCODE_PERMISSION_MODE:-${CLAUDE_PERMISSION_MODE:-auto}}"

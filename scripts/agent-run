@@ -17,7 +17,7 @@
 #       --new-worktree t6/xyz --base <sha> --repo /path/to/repo   # created under <repo>/.claude/worktrees/<slug>
 #       --dir /path/to/scratch                  # OR: plain dir for non-code briefs
 #       [--no-commit]                             # report-only: no commits or branches
-#       [--agent opencode --profile personal]     # opencode runs personal-only
+#       [--agent opencode --profile personal]     # antigravity and opencode run personal-only
 #       [--db nova_agent_xyz] [--subject "refactor: NOVA-26 ..."] [--effort medium]
 #       [--review <git range>] [--extra "more instructions"] [--tag c7f]
 #   agent-run status <run-id> | log <run-id> [-f] | wait <run-id> | stop <run-id> | list
@@ -38,6 +38,16 @@ RUNS_DIR="${EOS_AGENT_RUNS_DIR:-$HOME/.config/eos/agent-runs}"
 mkdir -p "$RUNS_DIR"
 
 die() { echo "agent-run: $*" >&2; exit 2; }
+# Physical directory for guard comparisons (mirrors bin/guards/codex):
+# pwd -P output never has a trailing slash; strip one from the fallback so a
+# trailing slash in the input cannot bypass a prefix check.
+canonical_dir() {
+  local d="$1" resolved
+  if resolved="$(cd "$d" 2>/dev/null && pwd -P)"; then printf '%s' "$resolved"; return 0; fi
+  d="$1"
+  while [[ "$d" != "/" && "$d" == */ ]]; do d="${d%/}"; done
+  printf '%s' "$d"
+}
 usage() { sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 # ---------- run bookkeeping ----------
@@ -134,7 +144,7 @@ cmd_start() {
       *) die "unknown start option: $1" ;;
     esac
   done
-  [[ -n "$agent" ]] || die "--agent is required (codex | antigravity | claude | opencode; opencode is personal-only)"
+  [[ -n "$agent" ]] || die "--agent is required (codex | antigravity | claude | opencode; antigravity and opencode are personal-only)"
   [[ -n "$brief" || -n "$prompt_override" ]] || die "--brief PATH (or --prompt) is required"
   [[ -z "$brief" || -f "$brief" ]] || die "brief not found: $brief"
   [[ "$profile" == work || "$profile" == personal ]] || die "--profile must be work or personal"
@@ -163,6 +173,19 @@ cmd_start() {
   [[ "$branch" == "?" ]] && branch="n/a"
   if [[ -n "$new_branch" ]]; then branch="$new_branch"; fi
   base="${base:-$(git -C "$wt" rev-parse --short HEAD 2>/dev/null || echo 'n/a')}"
+
+  # Single-account agents must not run inside the work tree, whatever the
+  # profile says. Resolve the worktree with pwd -P (so a trailing slash or a
+  # symlink cannot bypass the check) and refuse before anything is created.
+  # This runs for dry-run too, but creates nothing: resolution never writes.
+  if [[ ( "$agent" == antigravity || "$agent" == opencode ) && "${EOS_ALLOW_PERSONAL_AGENT_IN_WORK:-0}" != 1 ]]; then
+    local resolved_wt resolved_root
+    resolved_wt="$(canonical_dir "$wt")"
+    resolved_root="$(canonical_dir "${EOS_WORK_ROOT:-$HOME/work}")"
+    if [[ "$resolved_wt" == "$resolved_root" || "$resolved_wt" == "$resolved_root/"* ]]; then
+      die "$agent is a single-account (personal) agent and must not run inside the work tree ($resolved_wt); use codex or claude for work (override: EOS_ALLOW_PERSONAL_AGENT_IN_WORK=1)"
+    fi
+  fi
 
   # run dir
   local id; id="$(date +%Y%m%d-%H%M%S)-${agent}${tag:+-$tag}"
