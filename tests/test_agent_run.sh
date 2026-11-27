@@ -39,6 +39,15 @@ out="$("$script" start --dry-run --agent codex --model m1 --profile work \
 [[ "$out" == *"Commit subject exactly: feat: X do the thing"* ]]
 [[ "$out" == *"no trailer lines of any kind"* ]]
 [[ "$out" == *"acceptance items verbatim"* ]]
+[[ "$out" == *"brief's commit policy"* ]]
+[[ "$out" == *"squash into one commit only when the brief gives none"* ]]
+[[ "$out" == *"--no-verify"* ]]
+[[ "$out" != *"Finish with ONE squashed commit"* ]]
+
+# --extra text is appended to the prompt
+out_extra="$("$script" start --dry-run --agent codex \
+  --brief "$brief" --worktree "$repo/.claude/worktrees/existing" --extra "EXTRA-MARKER-123")"
+[[ "$out_extra" == *"EXTRA-MARKER-123"* ]]
 
 # db env/template are configurable
 out="$(AGENT_RUN_DB_ENV=MY_DB AGENT_RUN_DB_URL_TEMPLATE='sqlite:///{db}.db' "$script" start --dry-run \
@@ -54,6 +63,13 @@ out="$("$script" start --dry-run --agent antigravity --model m2 --effort low --r
 [[ "$out" == *"--effort"*"low"* ]]
 [[ "$out" == *"Review the changes in git range $base..HEAD"* ]]
 [[ "$out" != *"Implement the brief"* ]]
+[[ "$out" == *"logs/"* ]]
+[[ "$out" == *"Log frontmatter"* ]]
+[[ "$out" == *"title"* ]]
+[[ "$out" == *"type Log"* ]]
+[[ "$out" == *"date"* ]]
+[[ "$out" == *"status"* ]]
+[[ "$out" == *"stale_after"* ]]
 
 # claude command shape
 out="$("$script" start --dry-run --agent claude --model m3 --profile personal \

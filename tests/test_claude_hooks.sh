@@ -49,6 +49,18 @@ event UserPromptSubmit '{"hook_event_name":"UserPromptSubmit","prompt":"lets dis
 event UserPromptSubmit '{"hook_event_name":"UserPromptSubmit","prompt":"lets discuss a plan for this regression"}' | grep -q 'branching-discussion/SKILL.md and bug-investigation/SKILL.md'
 blocked="$(event PreToolUse '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"git commit -m x --trailer Co-authored-by: agent"}}')"
 grep -q '"decision": "block"' <<<"$blocked"
+event PreToolUse '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"git show | grep attribution"}}' | grep -q '"continue":true'
+session_block="$(event PreToolUse '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"git commit -m x session_url=https://example.com/s/1"}}')"
+grep -q '"decision": "block"' <<<"$session_block"
+attribution_commit="$(event PreToolUse '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"git commit -m fix attribution trailer"}}')"
+grep -q '"decision": "block"' <<<"$attribution_commit"
+agy_allow="$(event PreToolUse "{\"hookEventName\":\"PreToolUse\",\"cwd\":\"$tmp\",\"toolCall\":{\"name\":\"exec\",\"args\":{\"CommandLine\":\"git show | grep attribution\"}}}")"
+grep -q '"decision": "allow"' <<<"$agy_allow"
+agy_deny="$(event PreToolUse "{\"hookEventName\":\"PreToolUse\",\"cwd\":\"$tmp\",\"toolCall\":{\"name\":\"exec\",\"args\":{\"CommandLine\":\"git commit -m x session_url=https://example.com/s/1\"}}}")"
+grep -q '"decision": "deny"' <<<"$agy_deny"
+event PreToolUse '{"hook_event_name":"PreToolUse","turn_id":"t1","tool_name":"Bash","tool_input":{"command":"git show | grep attribution"}}' | grep -q '"continue":true'
+codex_session_block="$(event PreToolUse '{"hook_event_name":"PreToolUse","turn_id":"t1","tool_name":"Bash","tool_input":{"command":"git commit -m x session_url=https://example.com/s/1"}}')"
+grep -q '"decision": "block"' <<<"$codex_session_block"
 kb_write="$(event PreToolUse "{\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$tmp/kb-root/projects/eos/stable.md\"}}")"
 grep -q '"decision": "block"' <<<"$kb_write"
 event PreToolUse "{\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"$tmp/kb-root/projects/eos/_pending-kb-updates.md\"}}" | grep -q '"continue":true'
@@ -66,6 +78,30 @@ urdu_response="$(event Stop '{"hook_event_name":"Stop","last_assistant_message":
 grep -q '"decision": "block"' <<<"$urdu_response"
 devanagari_response="$(event Stop '{"hook_event_name":"Stop","last_assistant_message":"yeh \u091c\u093e\u0928\u0947 galat hai"}')"
 grep -q '"decision": "block"' <<<"$devanagari_response"
+cat > "$tmp/kb-fail" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$*" == *"checkpoint"* ]]; then
+  printf '%s\n' '{"command":"checkpoint","exit_code":5,"message":"freshness audit blocked lifecycle: concept X is stale","status":"validation_failure"}' >&2
+  exit 5
+fi
+printf '%s\n' '{"status":"ok"}'
+EOF
+chmod +x "$tmp/kb-fail"
+fail_stop="$(printf '%s' '{"hook_event_name":"Stop","stop_hook_active":false}' | EOS_KB_BIN="$tmp/kb-fail" HOOK_TEST_LOG="$log" EOS_KB_ROOT="$tmp/kb-root" EOS_PERSONAL_KNOWLEDGE_DIR="$tmp/kb-root" EOS_AGENT_SESSION_ID=s1 "$HOOK" Stop)"
+grep -q '"decision": "block"' <<<"$fail_stop"
+grep -q 'Checkpoint is required before completion' <<<"$fail_stop"
+grep -q 'freshness audit blocked lifecycle: concept X is stale' <<<"$fail_stop"
+cat > "$tmp/kb-fail-empty" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$*" == *"checkpoint"* ]]; then
+  exit 5
+fi
+printf '%s\n' '{"status":"ok"}'
+EOF
+chmod +x "$tmp/kb-fail-empty"
+empty_stop="$(printf '%s' '{"hook_event_name":"Stop","stop_hook_active":false}' | EOS_KB_BIN="$tmp/kb-fail-empty" HOOK_TEST_LOG="$log" EOS_KB_ROOT="$tmp/kb-root" EOS_PERSONAL_KNOWLEDGE_DIR="$tmp/kb-root" EOS_AGENT_SESSION_ID=s1 "$HOOK" Stop)"
+grep -q 'Checkpoint is required before completion' <<<"$empty_stop"
+! grep -q 'Detail:' <<<"$empty_stop"
 
 # Claude hook output contract: Claude Code reads only documented output
 # fields. Context must arrive as hookSpecificOutput.additionalContext on

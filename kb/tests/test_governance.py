@@ -200,3 +200,59 @@ def test_child_session_cannot_promote(tmp_path: Path) -> None:
     with pytest.raises(GovernanceError) as raised:
         promote_proposal(root, proposal.proposal_id, session_id="child")
     assert raised.value.code == "governance.child_session_forbidden"
+
+
+def test_missing_session_error_names_the_recovery_command(tmp_path: Path) -> None:
+    root = tmp_path / "knowledge"
+    root.mkdir()
+    proposal_file = tmp_path / "proposal.yaml"
+    _proposal_input(proposal_file, "new\n")
+    with pytest.raises(GovernanceError) as raised:
+        capture_proposal(root, target="concept.md", proposal_file=proposal_file, session_id="ghost")
+    assert raised.value.code == "governance.session_missing"
+    assert "kb session start" in raised.value.message
+    assert "--kb" in raised.value.message
+    assert "--cwd" in raised.value.message
+    assert "--agent" in raised.value.message
+    assert "--profile" in raised.value.message
+
+
+def test_proposal_yaml_error_carries_parser_detail(tmp_path: Path) -> None:
+    root = tmp_path / "knowledge"
+    root.mkdir()
+    _session(root, "parent")
+    proposal_file = tmp_path / "proposal.yaml"
+    proposal_file.write_text("summary: [unclosed\n  bad indent: : :\n", encoding="utf-8")
+    with pytest.raises(GovernanceError) as raised:
+        capture_proposal(root, target="concept.md", proposal_file=proposal_file, session_id="parent")
+    assert raised.value.code == "governance.proposal_invalid"
+    assert raised.value.message != "Proposal input is not valid YAML."
+    assert "line" in raised.value.message or "column" in raised.value.message
+
+
+def test_proposal_unreadable_file_carries_os_error(tmp_path: Path) -> None:
+    root = tmp_path / "knowledge"
+    root.mkdir()
+    _session(root, "parent")
+    with pytest.raises(GovernanceError) as raised:
+        capture_proposal(root, target="concept.md", proposal_file=tmp_path / "absent.yaml", session_id="parent")
+    assert raised.value.code == "governance.proposal_invalid"
+    assert "absent.yaml" in raised.value.message
+
+
+def test_surrogate_escaped_proposal_loads_emoji(tmp_path: Path) -> None:
+    root = tmp_path / "knowledge"
+    root.mkdir()
+    _session(root, "parent")
+    result = "---\ntype: Decision\ntitle: Party\nresource: kb:demo/party\n---\nShipped \U0001F600\n"
+    proposal_file = tmp_path / "proposal.yaml"
+    proposal_file.write_text(
+        "schema_version: 1\nsummary: Emoji survives\n"
+        "evidence: []\nsource_paths: []\nconfidence: high\nknown_gaps: []\n"
+        "suggested_freshness: {}\nconflicts: []\nresult_content: "
+        + json.dumps(result, ensure_ascii=True) + "\n",
+        encoding="utf-8",
+    )
+    assert "\\ud83d\\ude00" in proposal_file.read_text(encoding="utf-8")
+    proposal = capture_proposal(root, target="projects/demo/party.md", proposal_file=proposal_file, session_id="parent")
+    assert "\U0001F600" in proposal.result_content

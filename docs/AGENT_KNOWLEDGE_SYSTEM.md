@@ -95,6 +95,12 @@ kb review <proposal-id> --actor Vikas --session "$SESSION_ID" --decision accepte
 kb promote <proposal-id> --session "$SESSION_ID"
 ```
 
+Run any array loop that feeds `kb promote` under `bash` explicitly
+(shebang `#!/usr/bin/env bash` or a `bash -c` wrapper). `zsh` arrays are
+1-indexed, so a 0-based loop run under `zsh` shifted proposal targets by
+one during a past promote. When `zsh` is unavoidable, use 1-based indexing
+and note it in a comment.
+
 Promotion revalidates proposal, approval, base, and result hashes. Child sessions
 may capture evidence and proposals but cannot promote, deprecate, or approve a
 direct stable change.

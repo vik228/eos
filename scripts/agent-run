@@ -86,6 +86,7 @@ compose_prompt() {
 Review the changes in git range $review inside the worktree $wt against the brief at $brief.
 Work only in that worktree; do not modify any file; never push. Read the brief fully, then every file the range touches.
 Report, in this order: (1) requirements from the brief that the diff does NOT meet, each with file:line evidence; (2) correctness bugs (a concrete input -> wrong behaviour), most severe first; (3) security or isolation gaps; (4) tests that are missing or weakened; (5) anything that contradicts AGENTS.md or .claude/CLAUDE.md. Then a one-paragraph verdict: merge, fix-then-merge, or redo. No praise, no summary of what the diff does. Print the report as the final message.
+Any file you write under logs/ must start with valid Log frontmatter (title, type Log, date, status, stale_after).
 EOF
   else
     cat <<EOF
@@ -93,7 +94,7 @@ Implement the brief at $brief in full.
 You are in the git worktree $wt on branch $branch at HEAD $base; work only here, never cd to the main repository, never push, never touch .env, never use bare git stash.
 $( [[ -n "$db" ]] && echo "Create and use only your own database $db (export $db_env=$db_url in every shell that runs tests or hooks); never run migrations against any other database.")
 Read AGENTS.md and the Module Structure section of .claude/CLAUDE.md first (if they exist), then every file the brief names, then the brief's ground rules. Follow its work list in order.
-Commit work in progress after each work-list item with --no-verify so an interruption loses nothing. Finish with ONE squashed commit off $base that passes every pre-commit hook normally (if a formatter or the secrets scanner modifies files, git add -A and commit again).$( [[ -n "$subject" ]] && echo " Commit subject exactly: $subject") The commit message is a plain body with no trailer lines of any kind.
+Commit work in progress after each work-list item with --no-verify as local safety checkpoints. Follow the brief's commit policy; squash into one commit only when the brief gives none. The final commit off $base must pass every pre-commit hook normally (if a formatter or the secrets scanner modifies files, git add -A and commit again).$( [[ -n "$subject" ]] && echo " Commit subject exactly: $subject") The commit message is a plain body with no trailer lines of any kind.
 End by printing the brief's acceptance items verbatim as your final message.
 EOF
   fi

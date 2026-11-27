@@ -74,6 +74,9 @@ claude_personal_output="$("$ROOT/scripts/claude-personal" --dry-run)"
 
 opencode_personal_output="$("$ROOT/scripts/opencode-personal" --dry-run)"
 [[ "$opencode_personal_output" == *"OPENCODE_CONFIG_DIR=$HOME/.opencode-personal $HOME/personal/eos/bin/opencode --auto"* ]]
+opencode_personal_run_output="$("$ROOT/scripts/opencode-personal" run --dry-run "hello")"
+[[ "$opencode_personal_run_output" == *"bin/opencode run --auto"* ]]
+[[ "$opencode_personal_run_output" != *"--auto run"* ]]
 
 antigravity_output="$("$ROOT/scripts/antigravity-full" --dry-run)"
 [[ "$antigravity_output" == *"agy "* ]]
