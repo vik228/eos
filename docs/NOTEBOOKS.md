@@ -157,7 +157,8 @@ choice sticks for the buffer session. Only one connect runs at a time;
 parallel runs queue behind it. `:ColabStatus` shows link and usage,
 `:ColabConnect` starts a session explicitly, `:ColabStop` ends it. Idle
 sessions stop after `EOS_COLAB_IDLE_MINUTES` (default 15), but never while the
-kernel reports busy. A reconnected runtime is a fresh kernel, so re-run cells.
+kernel reports busy, while the remote GPU is in use, or while a training
+process is alive on the VM - an unreachable VM also keeps the session. A reconnected runtime is a fresh kernel, so re-run cells.
 `vim.g.eos_colab_status` holds `colab: off|local|<session>` for statuslines.
 Keys live in `.eos.local` as `EOS_COLAB_SESSION`, `EOS_COLAB_GPU`,
 `EOS_COLAB_AUTO`, `EOS_COLAB_IDLE_MINUTES`, `EOS_COLAB_LOCAL_PORT`, and
