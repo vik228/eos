@@ -9,6 +9,7 @@ import re
 import signal
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -198,7 +199,7 @@ def _parse_claude_stream_events(log_path: Path, max_entries: int = 40) -> tuple[
 
 def _sync_live_state(run_dir: Path) -> dict[str, Any]:
     meta = _read_meta(run_dir)
-    if meta.get("status") == "running" and not _pid_alive(meta.get("pid")):
+    if meta.get("status") == "running":
         exit_file = run_dir / "exit_code"
         if exit_file.is_file():
             try:
@@ -207,10 +208,12 @@ def _sync_live_state(run_dir: Path) -> dict[str, Any]:
                 code = -1
             meta["exit_code"] = code
             meta["status"] = "completed" if code == 0 else "failed"
-        else:
+            meta["ended_at"] = meta.get("ended_at") or _now_iso()
+            _write_meta(run_dir, meta)
+        elif not _pid_alive(meta.get("pid")):
             meta["status"] = "exited"
-        meta["ended_at"] = meta.get("ended_at") or _now_iso()
-        _write_meta(run_dir, meta)
+            meta["ended_at"] = meta.get("ended_at") or _now_iso()
+            _write_meta(run_dir, meta)
     return meta
 
 
@@ -285,15 +288,23 @@ def start_remote_agent(
 
 def _spawn_detached_runner(run_dir: Path) -> subprocess.Popen[bytes]:
     runner_err = (run_dir / "runner.log").open("ab")
+    pkg_parent = str(Path(__file__).resolve().parent.parent)
+    env = os.environ.copy()
+    existing_pp = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = f"{pkg_parent}{os.pathsep}{existing_pp}" if existing_pp else pkg_parent
     try:
-        return subprocess.Popen(
+        proc = subprocess.Popen(
             [sys.executable, "-m", "eos_kb.remote_agents", "_exec", str(run_dir)],
             stdin=subprocess.DEVNULL,
             stdout=runner_err,
             stderr=runner_err,
+            env=env,
             start_new_session=True,
             close_fds=True,
         )
+        # Reap the child in a daemon thread so long-lived servers never leak zombies.
+        threading.Thread(target=proc.wait, daemon=True).start()
+        return proc
     finally:
         runner_err.close()
 
