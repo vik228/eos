@@ -89,7 +89,16 @@ def _summary(record: dict[str, Any]) -> dict[str, Any]:
     evidence["causal_chain"] = evidence["root_cause"]
     evidence["fix_gate"] = evidence["failing_test"] or evidence["reproduction"]
     durable = record.get("durable_learning")
-    return {**record, "phases": {phase: record["phase"] == phase for phase in PHASES}, "evidence": evidence, "durable_learning_status": "proposal_created" if durable and durable.get("proposal_id") else ("required" if durable and durable.get("required") else "not_required")}
+    if isinstance(durable, dict):
+        if durable.get("proposal_id"):
+            durable_status = "proposal_created"
+        elif durable.get("required"):
+            durable_status = "required"
+        else:
+            durable_status = "not_required"
+    else:
+        durable_status = "not_required"
+    return {**record, "phases": {phase: record["phase"] == phase for phase in PHASES}, "evidence": evidence, "durable_learning_status": durable_status}
 
 
 def status_investigation(root: Path, investigation_id: str | None = None, *, session_id: str | None = None) -> dict[str, Any] | list[dict[str, Any]]:
@@ -138,6 +147,8 @@ def complete_investigation(root: Path, investigation_id: str) -> dict[str, Any]:
         learning = record.get("durable_learning")
         if learning is None:
             raise InvestigationError("durable-learning proposal decision is required")
+        if not isinstance(learning, dict):
+            raise InvestigationError('durable_learning must be a JSON object like {"required": false} via --file')
         if learning.get("required") and not learning.get("proposal_id"):
             raise InvestigationError("durable-learning proposal is required")
         record["phase"] = "complete"
