@@ -13,6 +13,8 @@ em_dash="$(printf '\342\200\224')"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 log="$tmp/kb.log"
+# Isolate kb session state (record_session_reads writes outside the KB root).
+export EOS_KB_STATE_ROOT="$tmp/kb-state"
 cat > "$tmp/kb" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${HOOK_TEST_LOG:?}"
@@ -69,6 +71,31 @@ event PreToolUse "{\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Write\",\"
 deep_write="$(event PreToolUse "{\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$tmp/kb-root/projects/eos/deep/stable.md\"}}")"
 grep -q '"decision": "block"' <<<"$deep_write"
 event PostToolUse '{"hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"git status"}}' | grep -q '"continue":true'
+# PostToolUse records direct KB reads into the session (record-only, never blocking).
+printf '%s\n' '# Notes' >"$tmp/kb-root/projects/eos/notes.md"
+PYTHONPATH="$ROOT/kb/src" "$ROOT/kb/.venv/bin/python" - "$tmp/kb-root" <<'PY'
+import pathlib, sys
+from eos_kb.sessions import start_session
+start_session(pathlib.Path(sys.argv[1]), cwd=pathlib.Path(sys.argv[1]), agent="test", profile="personal", session_id="s1")
+PY
+event PostToolUse "{\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Read\",\"tool_input\":{\"file_path\":\"$tmp/kb-root/projects/eos/notes.md\"}}" | grep -q '"continue":true'
+PYTHONPATH="$ROOT/kb/src" "$ROOT/kb/.venv/bin/python" - "$tmp/kb-root" <<'PY'
+import pathlib, sys
+from eos_kb.sessions import session_used_resources
+used = session_used_resources(pathlib.Path(sys.argv[1]), "s1")
+assert "projects/eos/notes.md" in used, sorted(used)
+PY
+# `cat` of a KB file records too; non-markdown and outside-KB files do not.
+event PostToolUse "{\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cat $tmp/kb-root/projects/eos/notes.md\"}}" | grep -q '"continue":true'
+printf 'x' >"$tmp/kb-root/projects/eos/data.txt"
+event PostToolUse "{\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Read\",\"tool_input\":{\"file_path\":\"$tmp/kb-root/projects/eos/data.txt\"}}" | grep -q '"continue":true'
+event PostToolUse '{"hook_event_name":"PostToolUse","tool_name":"Read","tool_input":{"file_path":"/tmp/elsewhere.md"}}' | grep -q '"continue":true'
+PYTHONPATH="$ROOT/kb/src" "$ROOT/kb/.venv/bin/python" - "$tmp/kb-root" <<'PY'
+import pathlib, sys
+from eos_kb.sessions import session_used_resources
+used = session_used_resources(pathlib.Path(sys.argv[1]), "s1")
+assert used == {"projects/eos/notes.md"}, sorted(used)
+PY
 event PreCompact '{"hook_event_name":"PreCompact"}' | grep -q '"continue":true'
 event PostCompact '{"hook_event_name":"PostCompact"}' | grep -q 'Every discussion uses the global interaction contract'
 event Stop '{"hook_event_name":"Stop","stop_hook_active":false}' | grep -q '"continue":true'

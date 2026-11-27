@@ -364,7 +364,118 @@ print(reason)
     if [[ -x "$kb" ]]; then "$kb" audit "${kb_args[@]}" --source-root "$hook_cwd" --json >/dev/null 2>&1 || true; fi
     emit_continue
     ;;
-  InstructionsLoaded|PostToolUse|*)
+  PostToolUse)
+    # Record-only direct-read tracking for the freshness gate: a Read/Edit/
+    # Write of a KB Markdown file, or `cat` of one, marks it used in this
+    # session so an expired tracked doc blocks the session that read it.
+    # Never blocks, never prints: any failure is silently ignored.
+    tool_name="$(printf '%s' "$payload" | python3 -c 'import json,sys
+try:
+ d=json.load(sys.stdin)
+ tc=d.get("toolCall") if isinstance(d.get("toolCall"), dict) else {}
+ print(d.get("tool_name") or tc.get("name") or "")
+except Exception: print("")')"
+    file_path="$(printf '%s' "$payload" | python3 -c 'import json,sys
+try:
+ d=json.load(sys.stdin)
+ t=d.get("tool_input") if isinstance(d.get("tool_input"), dict) else {}
+ tc=d.get("toolCall") if isinstance(d.get("toolCall"), dict) else {}
+ args=tc.get("args") if isinstance(tc.get("args"), dict) else {}
+ print(t.get("file_path") or t.get("path") or t.get("Path") or args.get("Path") or args.get("file_path") or args.get("path") or "")
+except Exception: print("")')"
+    command_text="$(printf '%s' "$payload" | python3 -c 'import json,sys
+try:
+ d=json.load(sys.stdin)
+ t=d.get("tool_input") if isinstance(d.get("tool_input"), dict) else {}
+ tc=d.get("toolCall") if isinstance(d.get("toolCall"), dict) else {}
+ args=tc.get("args") if isinstance(tc.get("args"), dict) else {}
+ print(t.get("command") or t.get("CommandLine") or args.get("CommandLine") or args.get("command") or "")
+except Exception: print("")')"
+    if [[ "$tool_name" =~ ^([Rr]ead|[Rr]ead_file|Write|Edit|MultiEdit|NotebookEdit|write_file|edit_file|multi_edit|notebook_edit)$ ]] || printf '%s' "$command_text" | grep -Eq '(^|[|;&[:space:]])cat[[:space:]]'; then
+      hook_root="$(cd "$(dirname "$0")/../../../.." && pwd)"
+      EOS_HOOK_ROOT="$hook_root" EOS_AGENT_SESSION_ID="${session:-}" \
+        python3 - "$tool_name" "$file_path" "$command_text" <<'PY' >/dev/null 2>&1 || true
+import os
+import pathlib
+import shlex
+import sys
+
+tool_name, file_path, command_text = sys.argv[1], sys.argv[2], sys.argv[3]
+session_id = os.environ.get("EOS_AGENT_SESSION_ID", "")
+if not session_id:
+    raise SystemExit(0)
+
+roots = [
+    os.environ.get(
+        "EOS_KB_ROOT", ""
+    ),
+    os.environ.get(
+        "EOS_PERSONAL_KNOWLEDGE_DIR", os.path.expanduser("~/personal/knowledge")
+    ),
+    os.environ.get("EOS_WORK_KNOWLEDGE_ROOT", os.path.expanduser("~/work/knowledge")),
+]
+
+candidates = []
+if tool_name and not tool_name.lower().endswith(("bash", "bashinput", "shell")):
+    if file_path:
+        candidates.append(file_path)
+if "cat" in (command_text or ""):
+    try:
+        tokens = shlex.split(command_text)
+    except ValueError:
+        tokens = []
+    skip_next = False
+    for tok in tokens:
+        if skip_next:
+            skip_next = False
+            continue
+        if tok == "cat":
+            continue
+        if tok.startswith("-") or tok in ("|", ">", ">>", "<", "&&", "||", ";"):
+            continue
+        if tok.endswith(".md"):
+            candidates.append(os.path.expanduser(tok))
+
+recorded = []
+for cand in candidates:
+    try:
+        path = pathlib.Path(cand).expanduser().resolve()
+    except OSError:
+        continue
+    if path.suffix != ".md":
+        continue
+    for root in roots:
+        if not root:
+            continue
+        try:
+            rel = path.relative_to(pathlib.Path(root).expanduser().resolve())
+        except (OSError, ValueError):
+            continue
+        recorded.append((root, rel.as_posix()))
+        break
+
+if not recorded:
+    raise SystemExit(0)
+
+sys.path.insert(0, os.path.join(os.environ.get("EOS_HOOK_ROOT", ""), "kb", "src"))
+try:
+    from eos_kb.sessions import record_session_reads
+except Exception:
+    raise SystemExit(0)
+
+roots_seen = {}
+for root, rel in recorded:
+    roots_seen.setdefault(root, []).append(rel)
+for root, rels in roots_seen.items():
+    try:
+        record_session_reads(pathlib.Path(root).expanduser(), session_id, rels)
+    except Exception:
+        pass
+PY
+    fi
+    emit_continue
+    ;;
+  InstructionsLoaded|*)
     emit_continue
     ;;
 esac
