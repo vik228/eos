@@ -162,6 +162,34 @@ def main():
                 return "ok", data
             return "denied", data
 
+        def dryrun_uri(tok):
+            """Ask the dryrun channel for the consent URL.
+
+            Returns the URL, "granted" if no consent is needed, or "" when
+            the channel itself is unreachable. Never raises.
+            """
+            try:
+                resp = creds.request(
+                    "POST",
+                    url,
+                    params=dict(params, dryrun="true"),
+                    headers={"x-goog-colab-token": tok},
+                    files={"file_id": (None, "empty.ipynb")},
+                )
+            except Exception:
+                return ""
+            if get_status_code(resp) != 200:
+                return ""
+            try:
+                data = json.loads(resp.text.split("\n", 1)[-1])
+            except (ValueError, AttributeError):
+                return ""
+            if not isinstance(data, dict):
+                return ""
+            if data.get("success"):
+                return "granted"
+            return data.get("unauthorized_redirect_uri", "") or ""
+
         token = get_token()
         if not token:
             print(
@@ -171,14 +199,21 @@ def main():
             )
             return False
 
+        def fresh_token(cached):
+            """Re-fetch: propagation tokens rotate, a stale one 400s."""
+            try:
+                t = get_token()
+            except Exception:
+                t = None
+            return t or cached
+
         outcome, data = attempt_propagate(token)
         if outcome == "denied":
-            uri = (data or {}).get("unauthorized_redirect_uri", "") if isinstance(data, dict) else ""
-            if not uri:
-                # No grant URL and no success: probe the dryrun channel once
-                # for a URL before giving up.
-                uri = ""
-            if not uri:
+            uri = dryrun_uri(token)
+            if uri == "granted":
+                # Won the race between probe and grant: propagate once more.
+                outcome, data = attempt_propagate(token)
+            if outcome != "ok" and not uri:
                 print(
                     "colab-drive-mount: unexpected authorization response "
                     "(no grant URL); retry, or mount once from a terminal "
@@ -187,7 +222,7 @@ def main():
                 )
                 stop_kernel()
                 return False
-            if uri not in announced:
+            if outcome != "ok" and uri not in announced:
                 announced.add(uri)
                 print(f"CONSENT-URL: {uri}", flush=True)
                 if os.environ.get("EOS_COLAB_NO_OPEN") != "1":
@@ -209,9 +244,9 @@ def main():
                     f"waiting up to {int(TIMEOUT)}s.",
                     flush=True,
                 )
-            outcome = None
             while outcome != "ok" and time.time() < deadline:
                 time.sleep(POLL)
+                token = fresh_token(token)
                 outcome, data = attempt_propagate(token)
             if outcome != "ok":
                 print(
