@@ -54,8 +54,8 @@ out="$(AGENT_RUN_DB_ENV=MY_DB AGENT_RUN_DB_URL_TEMPLATE='sqlite:///{db}.db' "$sc
   --agent codex --brief "$brief" --worktree "$repo/.claude/worktrees/existing" --db app_y)"
 [[ "$out" == *"export MY_DB=sqlite:///app_y.db"* ]]
 
-# review template, antigravity command shape, raised print timeout
-out="$("$script" start --dry-run --agent antigravity --model m2 --effort low --review "$base..HEAD" \
+# review template, antigravity command shape, raised print timeout (personal profile)
+out="$("$script" start --dry-run --agent antigravity --profile personal --model m2 --effort low --review "$base..HEAD" \
   --brief "$brief" --worktree "$repo/.claude/worktrees/existing")"
 [[ "$out" == *"antigravity-full"*"--print"* ]]
 [[ "$out" == *"--print-timeout"*"8h"* ]]
@@ -109,6 +109,16 @@ out="$("$script" start --dry-run --agent opencode --profile personal \
   --brief "$brief" --worktree "$repo" 2>&1 || true)" == *"personal"* ]]
 EOS_ALLOW_PERSONAL_AGENT_IN_WORK=1 "$script" start --dry-run --agent opencode --profile work \
   --brief "$brief" --worktree "$repo" >/dev/null 2>&1
+
+# antigravity is refused in the work profile too (default profile is work)
+! "$script" start --dry-run --agent antigravity --brief "$brief" --worktree "$repo" >/dev/null 2>&1
+[[ "$("$script" start --dry-run --agent antigravity --brief "$brief" --worktree "$repo" 2>&1 || true)" == *"use codex or claude"* ]]
+EOS_ALLOW_PERSONAL_AGENT_IN_WORK=1 "$script" start --dry-run --agent antigravity --profile work \
+  --brief "$brief" --worktree "$repo" >/dev/null 2>&1
+# the antigravity wrapper itself refuses inside the work tree (dry-run is exempt so it stays testable)
+work_tree="$tmp/work/proj"; mkdir -p "$work_tree"
+! EOS_WORK_ROOT="$tmp/work" EOS_AGENT_CWD="$work_tree" "$ROOT/scripts/antigravity-full" --help >/dev/null 2>&1
+EOS_WORK_ROOT="$tmp/work" EOS_AGENT_CWD="$work_tree" "$ROOT/scripts/antigravity-full" --dry-run >/dev/null 2>&1 || true
 
 # dry-run leaves no run directory behind
 [[ -z "$(ls -A "$EOS_AGENT_RUNS_DIR" 2>/dev/null)" ]]
