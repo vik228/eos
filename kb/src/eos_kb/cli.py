@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
 import sys
 from dataclasses import dataclass
 from datetime import datetime
 from enum import IntEnum, StrEnum
 from pathlib import Path
-from typing import Any, Final, Sequence, TextIO
+from typing import Any, Final, Iterable, Sequence, TextIO
 
 from .config import InitializationError, RegistryError, WorkspaceRoute, initialize_bundle, resolve_workspace
 from .freshness import audit_freshness, load_freshness
@@ -18,7 +20,7 @@ from .indexer import index_bundle, validate_bundle
 from .investigations import InvestigationError, block_investigation, complete_investigation, record_evidence, resume_investigation, start_investigation, status_investigation
 from .migration import MigrationError, apply as apply_migration, inventory as migration_inventory, manifest_hash, plan as plan_migration, record_migration_approval, rollback as rollback_migration, verify_plan
 from .retrieval import context as retrieve_context, related as retrieve_related, search as retrieve_search, show as retrieve_show, status as retrieve_status
-from .sessions import SessionError, checkpoint_session, end_session, recover_sessions, resume_session, start_session
+from .sessions import SessionError, checkpoint_session, end_session, normalize_used_resource, record_session_reads, recover_sessions, resume_session, session_used_resources, start_session
 from .storage import StorageError, atomic_write
 from .usage_log import record_usage
 
@@ -230,6 +232,22 @@ def _resolve_retrieval_route(args: argparse.Namespace) -> WorkspaceRoute:
     return resolve_workspace(Path.cwd(), kb=args.kb)
 
 
+def _record_session_use(kb: Path, resources: Iterable[str]) -> None:
+    """Record retrieved cards in the session record, best-effort.
+
+    The usage log is the primary retrieval record, but it can be disabled;
+    the session record is the fallback the gate consults either way. Must
+    never fail the retrieval command, so every error is swallowed.
+    """
+    session_id = os.environ.get("EOS_AGENT_SESSION_ID")
+    if not session_id:
+        return
+    try:
+        record_session_reads(kb, session_id, [str(item) for item in resources if item])
+    except (SessionError, OSError, ValueError):
+        pass
+
+
 def _search(args: argparse.Namespace) -> CommandResult:
     try:
         route = _resolve_retrieval_route(args)
@@ -271,15 +289,23 @@ def _search(args: argparse.Namespace) -> CommandResult:
         jev_requested=jev_requested, jev_used=jev_requested and jev_tokens > 0,
         jev_tokens=jev_tokens, cards=[card.resource for card in cards],
     )
+    _record_session_use(route.kb, [card.resource for card in cards])
     return CommandResult("search", ResultStatus.SEARCHED, f"found {len(cards)} result(s)", ExitCode.SUCCESS, data=[card.as_dict() for card in cards])
 
 
 def _show(args: argparse.Namespace) -> CommandResult:
     try:
-        card = retrieve_show(_resolve_retrieval_route(args).kb, args.concept, section=args.section)
+        route = _resolve_retrieval_route(args)
+        card = retrieve_show(route.kb, args.concept, section=args.section)
     except (RegistryError, ValueError) as exc:
         message = exc.remediation if isinstance(exc, RegistryError) else str(exc)
         return CommandResult("show", ResultStatus.VALIDATION_FAILURE, message, ExitCode.VALIDATION, True, getattr(exc, "code", "show.validation"), getattr(exc, "field_path", "$.concept"))
+    record_usage(
+        route.kb, command="show", query=args.concept, project=None,
+        jev_requested=False, jev_used=False, jev_tokens=0,
+        cards=[card.resource],
+    )
+    _record_session_use(route.kb, [card.resource])
     return CommandResult("show", ResultStatus.SHOWN, f"showing {card.resource}", ExitCode.SUCCESS, data=card.as_dict())
 
 
@@ -289,6 +315,7 @@ def _related(args: argparse.Namespace) -> CommandResult:
     except (RegistryError, ValueError) as exc:
         message = exc.remediation if isinstance(exc, RegistryError) else str(exc)
         return CommandResult("related", ResultStatus.VALIDATION_FAILURE, message, ExitCode.VALIDATION, True, getattr(exc, "code", "related.validation"), getattr(exc, "field_path", "$.concept"))
+    # Suggestions are not reads: related cards are never recorded as used.
     return CommandResult("related", ResultStatus.RELATED, f"found {len(cards)} related concept(s)", ExitCode.SUCCESS, data=[card.as_dict() for card in cards])
 
 
@@ -335,6 +362,7 @@ def _context(args: argparse.Namespace) -> CommandResult:
                 jev_tokens=result_obj.jev_tokens_used,
                 cards=[card.resource for card in result_obj.cards], budget=args.budget,
             )
+            _record_session_use(route.kb, [card.resource for card in result_obj.cards])
             return CommandResult("context", ResultStatus.CONTEXT, f"assembled {len(result_obj.cards)} result card(s) at {result_obj.estimated_units} units (jev={result_obj.jev_used})", ExitCode.SUCCESS, data=data)
         result = retrieve_context(route.kb, args.query, budget=args.budget, project=project, related_projects=related_projects, components=args.components)
     except (RegistryError, ValueError) as exc:
@@ -345,6 +373,7 @@ def _context(args: argparse.Namespace) -> CommandResult:
         jev_requested=False, jev_used=False, jev_tokens=0,
         cards=[card.resource for card in result.cards], budget=args.budget,
     )
+    _record_session_use(route.kb, [card.resource for card in result.cards])
     return CommandResult("context", ResultStatus.CONTEXT, f"assembled {len(result.cards)} result card(s) at {result.estimated_units} units", ExitCode.SUCCESS, data=result.as_dict())
 
 
@@ -487,7 +516,10 @@ def _deprecate(args: argparse.Namespace) -> CommandResult:
     return CommandResult("deprecate", ResultStatus.DEPRECATED, f"deprecated {args.concept}", ExitCode.SUCCESS, data=proposal.payload())
 
 
-def _lifecycle_audit(route: WorkspaceRoute, command: str) -> CommandResult | None:
+_UNKNOWN_WARNING_RE = re.compile(r"^(freshness|source|external source|time|coverage) unknown:")
+
+
+def _lifecycle_audit(route: WorkspaceRoute, command: str, session_id: str | None = None) -> CommandResult | None:
     """Audit the declared workspace before a lifecycle mutation is persisted."""
     try:
         report = audit_freshness(
@@ -509,20 +541,33 @@ def _lifecycle_audit(route: WorkspaceRoute, command: str) -> CommandResult | Non
 
     warnings = tuple(getattr(report, "warnings", ()))
     contradictions = tuple(getattr(report, "contradictions", ()))
-    # Unknown means that a concept has no freshness contract or that its
-    # evidence cannot currently be evaluated. Keep it visible in audit and
-    # retrieval output, but do not deadlock an otherwise valid agent session.
-    # Confirmed stale evidence and contradictions remain lifecycle blockers.
-    if report.overall != "stale" and not contradictions:
+    # Session-scoped expiry: an expired tracked doc blocks only the session
+    # that used it. "Used" is kb retrieval recorded in the session record
+    # (which mirrors the usage log) plus direct reads recorded into the
+    # session record. Other sessions see the same expiry as a warning via
+    # kb audit/stale, not a block. Contradictions and non-time stale
+    # evidence (drift, pending, coverage) still block KB-wide.
+    # Unknown findings are advisory in every case: they stay visible in audit
+    # output and the JSON report payload, but they never name the lifecycle
+    # blocker. Matching is by finding kind, so a drifted source on a path
+    # that merely contains the word "unknown" still blocks.
+    kb_wide = [
+        reason
+        for reason in warnings
+        if not reason.startswith("time ") and not _UNKNOWN_WARNING_RE.match(reason)
+    ]
+    stale_detail = {
+        finding.resource: finding.stale_after
+        for finding in report.time
+        if finding.state == "stale"
+    }
+    used = session_used_resources(route.kb, session_id)
+    mine = sorted(resource for resource in stale_detail if resource in used)
+    if not contradictions and not kb_wide and not mine:
         return None
 
-    # Unknown findings are advisory: they stay visible in audit output and the
-    # JSON report payload, but they must not name the lifecycle blocker.
-    # Confirmed stale evidence and contradictions are the blockers, so they
-    # lead the message in their original audit order (time findings already
-    # carry their stale_after dates).
-    blocking = [reason for reason in warnings if "unknown" not in reason]
-    reasons = blocking
+    reasons = list(kb_wide)
+    reasons.extend(f"time stale: {resource} ({stale_detail[resource]})" for resource in mine)
     if contradictions and not any("contradiction" in reason for reason in reasons):
         reasons.append(f"{len(contradictions)} contradiction(s) detected")
     if not reasons:
@@ -540,12 +585,32 @@ def _lifecycle_audit(route: WorkspaceRoute, command: str) -> CommandResult | Non
     )
 
 
+def _invalid_used_resource(value: object) -> bool:
+    """Mirror sessions.normalize_used_resource so the CLI rejects (with a
+    validation error, not a lifecycle block) exactly what recording rejects.
+    """
+    try:
+        normalize_used_resource(value)
+    except (SessionError, ValueError):
+        return True
+    return False
+
+
 def _session_command(args: argparse.Namespace) -> CommandResult:
     try:
         route = _resolve_retrieval_route(args)
         command = args.command_path.split()[1]
+        if command in {"checkpoint", "end"} and getattr(args, "used_resources", None):
+            invalid = [str(item) for item in args.used_resources if _invalid_used_resource(item)]
+            if invalid:
+                return CommandResult(
+                    args.command_path, ResultStatus.VALIDATION_FAILURE,
+                    f"used resource escapes the knowledge bundle: {invalid[0]!r}",
+                    ExitCode.VALIDATION, True, "session.invalid_used_resource", "$.used_resource",
+                )
+            record_session_reads(route.kb, args.session_id, list(args.used_resources))
         if command in {"checkpoint", "end"}:
-            blocked = _lifecycle_audit(route, args.command_path)
+            blocked = _lifecycle_audit(route, args.command_path, getattr(args, "session_id", None))
             if blocked is not None:
                 return blocked
         if command == "start":
@@ -750,6 +815,13 @@ def _configure_top_level_grammar(
     elif command == "checkpoint":
         _add_kb_argument(parser)
         parser.add_argument("--session")
+        parser.add_argument(
+            "--used-resource",
+            dest="used_resources",
+            action="append",
+            default=None,
+            help="record a directly read doc (resource or repo-relative path) as used by this session",
+        )
     elif command == "propose":
         _add_kb_argument(parser)
         parser.add_argument("--target", required=True)
@@ -795,10 +867,24 @@ def _configure_session_grammar(
     elif command == "checkpoint":
         parser.add_argument("session_id")
         _add_kb_argument(parser)
+        parser.add_argument(
+            "--used-resource",
+            dest="used_resources",
+            action="append",
+            default=None,
+            help="record a directly read doc (resource or repo-relative path) as used by this session",
+        )
     elif command == "end":
         parser.add_argument("session_id")
         _add_kb_argument(parser)
         parser.add_argument("--exit-code", type=int, required=True)
+        parser.add_argument(
+            "--used-resource",
+            dest="used_resources",
+            action="append",
+            default=None,
+            help="record a directly read doc (resource or repo-relative path) as used by this session",
+        )
     elif command == "recover":
         _add_kb_argument(parser)
         parser.add_argument("--lease-seconds", type=positive_int, default=300)

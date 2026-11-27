@@ -6,12 +6,14 @@ import re
 import sqlite3
 import subprocess
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 from urllib.parse import unquote, urlparse
 
-from .indexer import valid_manifest
+from .gate import GateError, gate_activation_at, latest_review_event, require_gate
+from .indexer import parse_review_window, valid_manifest
+from .normalize import normalized_content_hash
 from .storage import SCHEMA_VERSION, atomic_write, state_directory, writer_lock
 
 
@@ -36,6 +38,20 @@ class FreshnessValidationError(ValueError):
         self.code = code
         self.field_path = field_path
         super().__init__(message)
+
+
+def _disk_content_hash(root: Path, relative_file: str) -> str | None:
+    """Hash the file as it stands on disk right now.
+
+    The index is only rebuilt on promote, so an edit without reindex leaves
+    a stale manifest hash behind. Tracked docs are rehashed from disk so a
+    hash mismatch counts as edited-since-review instead of silently matching
+    the old indexed hash.
+    """
+    try:
+        return normalized_content_hash((root / relative_file).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError):
+        return None
 
 
 @dataclass(frozen=True)
@@ -201,16 +217,6 @@ def _matches(path: str, patterns: Iterable[str]) -> bool:
     return any(candidate.match(pattern) for pattern in patterns)
 
 
-def _parse_time(value: str) -> datetime | None:
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
-
-
 def _external_path(source: str) -> Path | None:
     parsed = urlparse(source)
     if parsed.scheme == "file":
@@ -338,7 +344,9 @@ def load_freshness(root: Path) -> FreshnessReport:
     return report
 
 
-def freshness_overlays(root: Path) -> dict[str, FreshnessOverlay]:
+def freshness_overlays(
+    root: Path, *, historical: frozenset[str] = frozenset()
+) -> dict[str, FreshnessOverlay]:
     report = load_freshness(root)
     states: dict[str, list[str]] = {}
     warnings: dict[str, set[str]] = {}
@@ -393,6 +401,11 @@ def freshness_overlays(root: Path) -> dict[str, FreshnessOverlay]:
 
     overlays: dict[str, FreshnessOverlay] = {}
     for resource, values in states.items():
+        # Historical docs are dated records: unknown evidence stays advisory
+        # (visible in warnings) and never drags the overlay to unknown.
+        # Drifted, stale, and pending evidence still blocks KB-wide.
+        if resource in historical:
+            values = [value for value in values if value != "unknown"]
         if any(value in {"drifted", "stale", "pending"} for value in values):
             state = "stale"
         elif "unknown" in values:
@@ -447,7 +460,7 @@ def audit_freshness(
             raise sqlite3.DatabaseError("quick_check failed")
         concepts = connection.execute(
             "SELECT relative_file, resource, project, type, status, verified, stale_after, "
-            "source_revision FROM concepts ORDER BY relative_file"
+            "freshness_mode, review_every, reviewed_at, source_revision FROM concepts ORDER BY relative_file"
         ).fetchall()
         indexed_sources: dict[str, dict[str, list[str]]] = {}
         for row in connection.execute(
@@ -486,6 +499,10 @@ def audit_freshness(
     source_findings: list[SourceFinding] = []
     external_findings: list[ExternalSourceFinding] = []
     time_findings: list[TimeFinding] = []
+    try:
+        gate = require_gate(root)
+    except GateError as exc:
+        raise FreshnessValidationError(exc.code, "$.freshness", str(exc)) from exc
     concept_by_resource: dict[str, sqlite3.Row] = {
         (row["resource"] or row["relative_file"]): row for row in concepts
     }
@@ -568,16 +585,68 @@ def audit_freshness(
                 )
             )
 
-        # A Log is a dated record of what happened; it cannot go out of date, so its
-        # stale_after is ignored rather than blocking the lifecycle when it passes.
-        # Deprecated concepts are frozen in the same way: the claims check below
-        # already skips deprecated owners, so time must not flag them either.
-        if row["stale_after"] and row["type"] != "Log" and row["status"] != "deprecated":
-            stale_at = _parse_time(row["stale_after"])
-            time_state = "unknown" if stale_at is None else (
-                "stale" if generated >= stale_at else "current"
+        # Expiry rule: the review window wins and stale_after is inert. It
+        # stays parsed in frontmatter and stored in the index for reference,
+        # but the audit never reads it: untagged docs are always unknown
+        # (never stale, never blocking), and tracked docs expire only from
+        # their window. Historical docs skip the time check and the unknown
+        # fallback below; type: is never consulted for the decision.
+        # Deprecated concepts are frozen the same way: the claims check
+        # below already skips deprecated owners, so time ignores them too.
+        mode = row["freshness_mode"]
+        if row["status"] == "deprecated" or mode == "historical":
+            continue
+        if mode != "tracked":
+            continue
+        window_days = parse_review_window(row["review_every"])
+        if window_days is None:
+            # Tracked docs without a window fail kb validate unconditionally,
+            # so the audit stays silent here instead of misusing the
+            # stale_after field; the concept still reports unknown when it
+            # has no other current evidence.
+            continue
+        # Last review is the latest linkage-valid review event for the
+        # target. A hash mismatch with that event means the doc was edited
+        # since review: expiry survives the edit and reports stale until
+        # re-review, never silently unknown. Docs already tracked at gate
+        # activation fall back to the activation timestamp while their
+        # content is unchanged since the snapshot. A doc edited since
+        # activation with no later review is likewise stale: the edit
+        # cannot lift expiry. Only a doc with no review at all stays
+        # unknown via the concept fallback below.
+        current_hash = _disk_content_hash(root, row["relative_file"])
+        try:
+            latest = latest_review_event(root, row["relative_file"], now=generated)
+        except GateError as exc:
+            raise FreshnessValidationError(exc.code, "$.freshness", str(exc)) from exc
+        if latest is None:
+            snapshot_hash = gate.get("docs", {}).get(row["relative_file"])
+            activated_at = gate_activation_at(gate)
+            if snapshot_hash is None or activated_at is None:
+                # New doc with no review yet, or undatable activation: no
+                # computable expiry, unknown via the concept fallback below.
+                continue
+            effective = activated_at + timedelta(days=window_days)
+            if current_hash == snapshot_hash:
+                state = "stale" if generated >= effective else "current"
+            else:
+                # Edited since activation with no later review: the edit
+                # cannot lift expiry, so the doc reports stale.
+                state = "stale"
+        else:
+            reviewed_at, reviewed_hash = latest
+            effective = reviewed_at + timedelta(days=window_days)
+            if reviewed_hash == current_hash:
+                state = "stale" if generated >= effective else "current"
+            else:
+                state = "stale"
+        time_findings.append(
+            TimeFinding(
+                resource,
+                effective.isoformat(),
+                state,
             )
-            time_findings.append(TimeFinding(resource, row["stale_after"], time_state))
+        )
 
     grouped_claims: dict[tuple[str, str], list[tuple[str, str]]] = {}
     for row in claims:
@@ -712,11 +781,20 @@ def audit_freshness(
             if resource in resource_states:
                 resource_states[resource].append(item.state)
     concept_freshness: list[ConceptFreshness] = []
+    # Historical docs are dated records, never live references: they are
+    # fresh unless conflicting evidence says otherwise, and never unknown.
+    historical_resources = {
+        (row["resource"] or row["relative_file"])
+        for row in concepts
+        if row["freshness_mode"] == "historical"
+    }
     for resource, values in sorted(resource_states.items()):
         if any(value in {"drifted", "stale", "pending"} for value in values):
             concept_state = "stale"
         elif "unknown" in values or not values:
-            concept_state = "unknown"
+            # Historical docs are dated records, never live references: with
+            # no conflicting evidence they report fresh, never unknown.
+            concept_state = "fresh" if resource in historical_resources else "unknown"
         else:
             concept_state = "fresh"
         concept_freshness.append(

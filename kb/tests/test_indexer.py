@@ -41,7 +41,8 @@ def test_index_stores_concepts_headings_links_reverse_edges_and_fts(bundle: Path
     report = index_bundle(bundle)
     assert report.errors == []
     assert report.database_path.parent == state_directory(bundle)
-    assert sorted(path.name for path in (bundle / ".eos").iterdir()) == ["state.md"]
+    names = {path.name for path in (bundle / ".eos").iterdir()} - {"writer.lock"}
+    assert names == {"freshness-gate.json", "reviews.jsonl", "approvals.jsonl", "state.md"}
     connection = report.connection
     assert connection.execute("SELECT count(*) FROM concepts").fetchone()[0] == 2
     assert connection.execute("SELECT title FROM headings").fetchone()[0] == "Intro"
@@ -588,3 +589,182 @@ def test_recovery_rejects_schema_valid_journal_for_authored_file(
     assert staged.read_bytes() == b"forged staged bytes"
     assert backup.read_bytes() == b"forged backup bytes"
     assert recovery.exists()
+
+
+def _contract_codes(report) -> set[tuple[str, str]]:
+    return {(error.code, error.relative_file) for error in report.errors}
+
+
+def test_validate_refuses_new_doc_without_freshness(bundle: Path) -> None:
+    # Indexing activates the gate with the existing docs; a doc added
+    # afterwards is new and must declare its contract. Validate stays
+    # read-only and never activates.
+    assert index_bundle(bundle).errors == []
+    assert ("freshness.contract_required", "areas/a.md") not in _contract_codes(validate_bundle(bundle))
+    write_concept(bundle, "areas/new.md", resource="kb:new", title="New", body="new")
+    report = validate_bundle(bundle)
+    assert ("freshness.contract_required", "areas/new.md") in _contract_codes(report)
+
+
+def test_validate_accepts_new_doc_with_declared_contract(bundle: Path) -> None:
+    index_bundle(bundle)
+    write_concept(
+        bundle,
+        "areas/new.md",
+        resource="kb:new",
+        title="New",
+        body="new",
+        freshness="historical",
+    )
+    report = validate_bundle(bundle)
+    assert ("freshness.contract_required", "areas/new.md") not in _contract_codes(report)
+
+
+def test_validate_refuses_tracked_doc_without_window(bundle: Path) -> None:
+    index_bundle(bundle)
+    write_concept(
+        bundle,
+        "areas/tracked.md",
+        resource="kb:tracked",
+        title="Tracked",
+        body="tracked",
+        freshness="tracked",
+    )
+    report = validate_bundle(bundle)
+    assert ("freshness.review_window_missing", "areas/tracked.md") in _contract_codes(report)
+
+
+def test_validate_accepts_tracked_doc_with_window(bundle: Path) -> None:
+    index_bundle(bundle)
+    write_concept(
+        bundle,
+        "areas/windowed.md",
+        resource="kb:windowed",
+        title="Windowed",
+        body="windowed",
+        freshness="tracked",
+        review_every="30d",
+    )
+    report = validate_bundle(bundle)
+    assert ("freshness.review_window_missing", "areas/windowed.md") not in _contract_codes(report)
+    assert ("freshness.review_window_invalid", "areas/windowed.md") not in _contract_codes(report)
+
+
+def test_validate_refuses_invalid_review_window(bundle: Path) -> None:
+    index_bundle(bundle)
+    write_concept(
+        bundle,
+        "areas/bad-window.md",
+        resource="kb:bad-window",
+        title="Bad",
+        body="bad",
+        freshness="tracked",
+        review_every="30x",
+    )
+    report = validate_bundle(bundle)
+    assert ("freshness.review_window_invalid", "areas/bad-window.md") in _contract_codes(report)
+
+
+def test_gate_boundary_survives_reindex(bundle: Path) -> None:
+    index_bundle(bundle)
+    gate_before = (bundle / ".eos" / "freshness-gate.json").read_bytes()
+    write_concept(bundle, "areas/new.md", resource="kb:new", title="New", body="new")
+    index_bundle(bundle)
+    # Rebuilding the index must not move the boundary: the new doc is still new.
+    assert (bundle / ".eos" / "freshness-gate.json").read_bytes() == gate_before
+    report = validate_bundle(bundle)
+    assert ("freshness.contract_required", "areas/new.md") in _contract_codes(report)
+
+
+def test_new_log_with_historical_passes_validate(bundle: Path) -> None:
+    # The capture template writes Logs with freshness: historical and no
+    # stale_after; they must validate as new docs after activation. The same
+    # holds for pending-queue working registers appended by capture.
+    index_bundle(bundle)
+    write_concept(
+        bundle,
+        "logs/2026/session.md",
+        resource="kb:session",
+        title="Session",
+        body="session",
+        type="Log",
+        date="2026-01-01",
+        freshness="historical",
+    )
+    write_concept(
+        bundle,
+        "projects/demo/_pending-kb-updates.md",
+        resource="kb:pending",
+        title="Pending",
+        body="pending",
+        freshness="historical",
+    )
+    report = validate_bundle(bundle)
+    assert "freshness.contract_required" not in {error.code for error in report.errors}
+
+
+@pytest.mark.parametrize(
+    ("state", "code"),
+    (("missing", "gate.missing"), ("corrupt", "gate.corrupt"), ("version", "gate.version_mismatch")),
+)
+def test_validate_fails_closed_on_unusable_gate(bundle: Path, state: str, code: str) -> None:
+    index_bundle(bundle)
+    gate_path = bundle / ".eos" / "freshness-gate.json"
+    if state == "missing":
+        gate_path.unlink()
+    elif state == "corrupt":
+        gate_path.write_text("{truncated", encoding="utf-8")
+    else:
+        gate_path.write_text(
+            json.dumps({"schema_version": 999, "activated_at": "2026-01-01T00:00:00+00:00", "docs": {}}),
+            encoding="utf-8",
+        )
+
+    report = validate_bundle(bundle)
+
+    codes = {(error.code, error.relative_file) for error in report.errors}
+    assert (code, "freshness-gate.json") in codes
+    # Read-only: a second validate sees the same failure, never a fresh gate.
+    assert validate_bundle(bundle).errors == report.errors
+
+
+def test_index_refuses_corrupt_gate_without_reactivating(bundle: Path) -> None:
+    index_bundle(bundle)
+    gate_path = bundle / ".eos" / "freshness-gate.json"
+    gate_before = gate_path.read_bytes()
+    gate_path.write_text("{truncated", encoding="utf-8")
+
+    report = index_bundle(bundle)
+
+    assert ("gate.corrupt", "freshness-gate.json") in _contract_codes(report)
+    # Refuse means refuse: the corrupt record is left untouched, never
+    # silently replaced with a fresh snapshot.
+    assert gate_path.read_bytes() == b"{truncated"
+    assert gate_path.read_bytes() != gate_before
+
+
+def test_gate_snapshot_predates_index_build(bundle: Path) -> None:
+    # prepare_gate_activation snapshots the pre-index tree; a doc added after
+    # the snapshot but committed with it still counts as new.
+    from eos_kb.gate import commit_gate_activation, load_gate, prepare_gate_activation
+
+    assert load_gate(bundle) is None
+    pending = prepare_gate_activation(bundle)
+    assert pending is not None
+    write_concept(bundle, "areas/late.md", resource="kb:late", title="Late", body="late")
+    committed = commit_gate_activation(bundle, pending)
+
+    assert "areas/late.md" not in committed["docs"]
+    report = validate_bundle(bundle)
+    assert ("freshness.contract_required", "areas/late.md") in _contract_codes(report)
+
+
+def test_prepare_gate_refuses_corrupt_record(bundle: Path) -> None:
+    from eos_kb.gate import GateError, prepare_gate_activation
+
+    index_bundle(bundle)
+    (bundle / ".eos" / "freshness-gate.json").write_text("{truncated", encoding="utf-8")
+
+    with pytest.raises(GateError) as raised:
+        prepare_gate_activation(bundle)
+    assert raised.value.code == "gate.corrupt"

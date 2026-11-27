@@ -17,7 +17,14 @@ from eos_kb.freshness import (
     audit_freshness,
     load_freshness,
 )
-from eos_kb.indexer import index_bundle
+from eos_kb.gate import (
+    GateError,
+    ensure_gate_activation,
+    latest_review_event,
+    record_review_event,
+    require_gate,
+)
+from eos_kb.indexer import index_bundle, validate_bundle
 from eos_kb.retrieval import search
 from eos_kb.schema import load_schema
 from eos_kb.storage import SCHEMA_VERSION, state_directory
@@ -58,6 +65,9 @@ def _concept(
     source_paths: tuple[str, ...] = (),
     source_revision: str | None = None,
     stale_after: str | None = None,
+    freshness: str | None = None,
+    review_every: str | None = None,
+    reviewed_at: str | None = None,
     status: str = "stable",
     concept_type: str = "Decision",
     claims: tuple[tuple[str, object], ...] = (),
@@ -73,6 +83,12 @@ def _concept(
     }
     if stale_after is not None:
         metadata["stale_after"] = stale_after
+    if freshness is not None:
+        metadata["freshness"] = freshness
+    if review_every is not None:
+        metadata["review_every"] = review_every
+    if reviewed_at is not None:
+        metadata["reviewed_at"] = reviewed_at
     if sources:
         metadata["sources"] = list(sources)
     if verified:
@@ -95,6 +111,55 @@ def _concept(
 def isolated_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("EOS_KB_STATE_ROOT", str(tmp_path / "state"))
     return tmp_path / "knowledge"
+
+
+def _indexed_content_hash(kb: Path, relative: str) -> str:
+    manifest = json.loads((state_directory(kb) / "manifest.json").read_text(encoding="utf-8"))
+    for item in manifest["concepts"]:
+        if item["path"] == relative:
+            return item["content_hash"]
+    raise AssertionError(f"{relative} is not indexed")
+
+
+def _record_linked_review(
+    kb: Path,
+    target: str,
+    content_hash: str,
+    reviewed_at: str,
+    *,
+    proposal_id: str = "proposal-1",
+    session_id: str = "session-1",
+) -> None:
+    """Write an accepted approval plus its review event, as promote would.
+
+    Review events only count when linked to an accepted approval for the
+    same proposal id and content hash, so tests must write both halves.
+    """
+    approvals = kb / ".eos" / "approvals.jsonl"
+    approvals.parent.mkdir(parents=True, exist_ok=True)
+    with approvals.open("a", encoding="utf-8") as stream:
+        stream.write(
+            json.dumps({
+                "schema_version": 1,
+                "proposal_id": proposal_id,
+                "actor": "test",
+                "timestamp": reviewed_at,
+                "proposal_hash": "sha256:" + "0" * 64,
+                "base_target_hash": content_hash,
+                "proposed_result_hash": content_hash,
+                "decision": "accepted",
+                "session_id": session_id,
+            })
+            + "\n"
+        )
+    record_review_event(
+        kb,
+        target=target,
+        content_hash=content_hash,
+        proposal_id=proposal_id,
+        session_id=session_id,
+        reviewed_at=reviewed_at,
+    )
 
 
 def test_git_source_drift_uses_revision_blob_and_persists_external_state(
@@ -127,7 +192,8 @@ def test_git_source_drift_uses_revision_blob_and_persists_external_state(
     assert "source drift: kb:alpha/service (src/service.py)" in drifted.warnings
     assert load_freshness(isolated_state).as_dict() == drifted.as_dict()
     assert (state_directory(isolated_state) / "freshness.json").is_file()
-    assert not (isolated_state / ".eos").exists()
+    # Indexing activates the durable gate boundary in the KB's own .eos/.
+    assert (isolated_state / ".eos" / "freshness-gate.json").is_file()
 
 
 def test_git_rename_without_content_change_is_current(
@@ -195,6 +261,8 @@ def test_time_drift_and_external_content_hashes_are_independent(
     tmp_path: Path,
     isolated_state: Path,
 ) -> None:
+    # The doc is untagged, so its expired stale_after is inert: no time
+    # finding at all, and the doc stays advisory unknown, never blocking.
     repo = _repo(tmp_path)
     external = tmp_path / "external.txt"
     external.write_text("baseline", encoding="utf-8")
@@ -215,7 +283,11 @@ def test_time_drift_and_external_content_hashes_are_independent(
         now=datetime(2026, 7, 1, tzinfo=timezone.utc),
     )
     assert fresh_source.external_sources[0].state == "current"
-    assert fresh_source.time[0].state == "stale"
+    assert fresh_source.time == ()
+    assert [(item.resource, item.state) for item in fresh_source.concepts] == [
+        ("kb:alpha/external", "fresh")
+    ]
+    assert fresh_source.overall == "fresh"
 
     external.write_text("changed", encoding="utf-8")
     changed = audit_freshness(
@@ -224,7 +296,7 @@ def test_time_drift_and_external_content_hashes_are_independent(
         now=datetime(2026, 7, 1, tzinfo=timezone.utc),
     )
     assert changed.external_sources[0].state == "drifted"
-    assert changed.time[0].state == "stale"
+    assert changed.time == ()
 
 
 def test_a_log_is_a_dated_record_and_never_goes_time_stale(
@@ -311,14 +383,25 @@ def test_naive_audit_time_is_interpreted_as_utc(
         isolated_state,
         "time.md",
         resource="kb:alpha/time",
-        stale_after="2026-01-01T00:00:00+00:00",
+        freshness="tracked",
+        review_every="30d",
+        body="# Note\ntimetoken",
     )
     index_bundle(isolated_state)
+    content_hash = _indexed_content_hash(isolated_state, "time.md")
+    _record_linked_review(
+        isolated_state,
+        target="time.md",
+        content_hash=content_hash,
+        proposal_id="proposal-1",
+        session_id="session-1",
+        reviewed_at="2026-01-01T00:00:00+00:00",
+    )
 
     report = audit_freshness(
         isolated_state,
         repo,
-        now=datetime(2026, 1, 1),
+        now=datetime(2026, 1, 31),
     )
 
     assert report.time[0].state == "stale"
@@ -881,3 +964,594 @@ def test_cli_stale_without_audit_is_typed_validation(
         "code": "freshness.state_unavailable",
         "field_path": "$.freshness",
     }
+
+
+def test_untagged_doc_with_expired_stale_after_stays_unknown_never_blocking(
+    tmp_path: Path,
+    isolated_state: Path,
+) -> None:
+    # stale_after is inert: an untagged doc with a long-past date reports
+    # unknown (advisory) instead of stale, so it can never block.
+    repo = _repo(tmp_path)
+    _concept(
+        isolated_state,
+        "legacy.md",
+        resource="kb:alpha/legacy",
+        stale_after="2026-01-01T00:00:00+00:00",
+        body="# Note\nlegacytoken",
+    )
+    index_bundle(isolated_state)
+
+    report = audit_freshness(
+        isolated_state,
+        repo,
+        now=datetime(2026, 7, 1, tzinfo=timezone.utc),
+    )
+
+    assert report.time == ()
+    assert [(item.resource, item.state) for item in report.concepts] == [
+        ("kb:alpha/legacy", "unknown")
+    ]
+    assert "freshness unknown: kb:alpha/legacy" in report.warnings
+    assert report.overall == "unknown"
+
+
+def test_historical_doc_never_unknown_including_deprecated(
+    tmp_path: Path,
+    isolated_state: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    _concept(
+        isolated_state,
+        "logs/2026/old-session.md",
+        resource="kb:alpha/old-session",
+        stale_after="2026-01-01T00:00:00+00:00",
+        freshness="historical",
+        concept_type="Log",
+        status="deprecated",
+        body="# Note\nsessiontoken",
+    )
+    index_bundle(isolated_state)
+
+    report = audit_freshness(
+        isolated_state,
+        repo,
+        now=datetime(2026, 7, 1, tzinfo=timezone.utc),
+    )
+
+    assert report.time == ()
+    assert [(item.resource, item.state) for item in report.concepts] == [
+        ("kb:alpha/old-session", "fresh")
+    ]
+    assert report.overall == "fresh"
+    assert "freshness unknown: kb:alpha/old-session" not in report.warnings
+    assert search(isolated_state, "sessiontoken", include_deprecated=True)[0].freshness == "fresh"
+
+
+def test_historical_conflict_can_still_report_stale(
+    tmp_path: Path,
+    isolated_state: Path,
+) -> None:
+    # Historical is never *unknown*, but conflicting evidence still reports
+    # stale: the contradiction (not expiry) is what blocks.
+    repo = _repo(tmp_path)
+    _concept(
+        isolated_state,
+        "a.md",
+        resource="kb:alpha/a",
+        freshness="historical",
+        claims=(("mode", "one"),),
+    )
+    _concept(
+        isolated_state,
+        "b.md",
+        resource="kb:alpha/b",
+        freshness="historical",
+        claims=(("mode", "two"),),
+    )
+    index_bundle(isolated_state)
+
+    report = audit_freshness(isolated_state, repo)
+
+    assert {item.resource: item.state for item in report.concepts} == {
+        "kb:alpha/a": "stale",
+        "kb:alpha/b": "stale",
+    }
+    assert len(report.contradictions) == 1
+
+
+def test_tracked_window_expiry_uses_hash_bound_review_event(
+    tmp_path: Path,
+    isolated_state: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    _concept(
+        isolated_state,
+        "router.md",
+        resource="kb:alpha/router",
+        freshness="tracked",
+        review_every="30d",
+        body="# Note\nroutertoken",
+    )
+    index_bundle(isolated_state)
+    content_hash = _indexed_content_hash(isolated_state, "router.md")
+    _record_linked_review(
+        isolated_state,
+        target="router.md",
+        content_hash=content_hash,
+        proposal_id="proposal-1",
+        session_id="session-1",
+        reviewed_at="2026-01-01T00:00:00+00:00",
+    )
+
+    expired = audit_freshness(
+        isolated_state,
+        repo,
+        now=datetime(2026, 2, 15, tzinfo=timezone.utc),
+    )
+    assert expired.time[0].state == "stale"
+    assert expired.time[0].stale_after == "2026-01-31T00:00:00+00:00"
+
+    _record_linked_review(
+        isolated_state,
+        target="router.md",
+        content_hash=content_hash,
+        proposal_id="proposal-2",
+        session_id="session-1",
+        reviewed_at="2026-02-01T00:00:00+00:00",
+    )
+    current = audit_freshness(
+        isolated_state,
+        repo,
+        now=datetime(2026, 2, 15, tzinfo=timezone.utc),
+    )
+    assert current.time[0].state == "current"
+
+
+def test_review_event_hash_mismatch_reports_stale(
+    tmp_path: Path,
+    isolated_state: Path,
+) -> None:
+    # Expiry survives edits: content changed after the review, so the latest
+    # event no longer matches and the doc reports stale until re-review,
+    # never unknown.
+    repo = _repo(tmp_path)
+    _concept(
+        isolated_state,
+        "router.md",
+        resource="kb:alpha/router",
+        freshness="tracked",
+        review_every="30d",
+        body="# Note\nroutertoken",
+    )
+    index_bundle(isolated_state)
+    _record_linked_review(
+        isolated_state,
+        target="router.md",
+        content_hash=_indexed_content_hash(isolated_state, "router.md"),
+        proposal_id="proposal-1",
+        session_id="session-1",
+        reviewed_at="2026-01-01T00:00:00+00:00",
+    )
+    _concept(
+        isolated_state,
+        "router.md",
+        resource="kb:alpha/router",
+        freshness="tracked",
+        review_every="30d",
+        body="# Note\nroutertoken changed",
+    )
+    index_bundle(isolated_state)
+
+    report = audit_freshness(
+        isolated_state,
+        repo,
+        now=datetime(2026, 7, 1, tzinfo=timezone.utc),
+    )
+
+    assert report.time[0].state == "stale"
+    assert report.time[0].stale_after == "2026-01-31T00:00:00+00:00"
+    assert report.overall == "stale"
+
+
+def test_bare_reviewed_at_edit_reports_stale(
+    tmp_path: Path,
+    isolated_state: Path,
+) -> None:
+    # reviewed_at is informational only and no review event exists: editing it
+    # changes the hash without a review, so expiry survives the edit and the
+    # doc reports stale instead of an extended window or unknown.
+    repo = _repo(tmp_path)
+    _concept(
+        isolated_state,
+        "router.md",
+        resource="kb:alpha/router",
+        freshness="tracked",
+        review_every="30d",
+        reviewed_at="2026-01-01T00:00:00+00:00",
+        body="# Note\nroutertoken",
+    )
+    ensure_gate_activation(isolated_state, now=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    index_bundle(isolated_state)
+    _concept(
+        isolated_state,
+        "router.md",
+        resource="kb:alpha/router",
+        freshness="tracked",
+        review_every="30d",
+        reviewed_at="2026-06-01T00:00:00+00:00",
+        body="# Note\nroutertoken",
+    )
+    index_bundle(isolated_state)
+
+    report = audit_freshness(
+        isolated_state,
+        repo,
+        now=datetime(2026, 7, 1, tzinfo=timezone.utc),
+    )
+
+    # No review event exists and the content changed since activation, so
+    # the edit cannot lift expiry: the time finding is stale, dated from
+    # the activation timestamp plus the window.
+    assert report.time[0].state == "stale"
+    assert report.time[0].stale_after == "2026-01-31T00:00:00+00:00"
+    assert [(item.resource, item.state) for item in report.concepts] == [
+        ("kb:alpha/router", "stale")
+    ]
+    assert report.overall == "stale"
+
+
+def test_activation_gives_existing_tracked_docs_an_initial_review(
+    tmp_path: Path,
+    isolated_state: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    _concept(
+        isolated_state,
+        "router.md",
+        resource="kb:alpha/router",
+        freshness="tracked",
+        review_every="30d",
+        body="# Note\nroutertoken",
+    )
+    ensure_gate_activation(isolated_state, now=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    index_bundle(isolated_state)
+
+    current = audit_freshness(
+        isolated_state,
+        repo,
+        now=datetime(2026, 1, 15, tzinfo=timezone.utc),
+    )
+    assert current.time[0].state == "current"
+    assert current.time[0].stale_after == "2026-01-31T00:00:00+00:00"
+
+    expired = audit_freshness(
+        isolated_state,
+        repo,
+        now=datetime(2026, 2, 15, tzinfo=timezone.utc),
+    )
+    assert expired.time[0].state == "stale"
+
+
+def test_stale_after_is_inert_when_window_present(
+    tmp_path: Path,
+    isolated_state: Path,
+) -> None:
+    # The window wins: a long-past stale_after does not force immediate
+    # stale while the window is still current.
+    repo = _repo(tmp_path)
+    _concept(
+        isolated_state,
+        "router.md",
+        resource="kb:alpha/router",
+        freshness="tracked",
+        review_every="30d",
+        stale_after="2026-01-01T00:00:00+00:00",
+        body="# Note\nroutertoken",
+    )
+    index_bundle(isolated_state)
+    _record_linked_review(
+        isolated_state,
+        target="router.md",
+        content_hash=_indexed_content_hash(isolated_state, "router.md"),
+        proposal_id="proposal-1",
+        session_id="session-1",
+        reviewed_at="2026-06-01T00:00:00+00:00",
+    )
+
+    report = audit_freshness(
+        isolated_state,
+        repo,
+        now=datetime(2026, 6, 15, tzinfo=timezone.utc),
+    )
+
+    assert report.time[0].state == "current"
+    assert report.time[0].stale_after == "2026-07-01T00:00:00+00:00"
+
+
+def test_forged_future_and_unlinked_review_lines_are_rejected(
+    tmp_path: Path,
+    isolated_state: Path,
+) -> None:
+    # A doc created after activation was never reviewed and has no review
+    # events. Forged lines (bad hash, future date, or no linked approval)
+    # must not resurrect one: it stays unknown, never stale, never current.
+    repo = _repo(tmp_path)
+    ensure_gate_activation(isolated_state, now=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    _concept(
+        isolated_state,
+        "router.md",
+        resource="kb:alpha/router",
+        freshness="tracked",
+        review_every="30d",
+        body="# Note\nroutertoken",
+    )
+    index_bundle(isolated_state)
+    content_hash = _indexed_content_hash(isolated_state, "router.md")
+    reviews = isolated_state / ".eos" / "reviews.jsonl"
+
+    def append_event(payload: dict) -> None:
+        with reviews.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(payload) + "\n")
+
+    valid_event = {
+        "schema_version": 1,
+        "target": "router.md",
+        "content_hash": content_hash,
+        "reviewed_at": "2026-06-01T00:00:00+00:00",
+        "proposal_id": "proposal-1",
+        "session_id": "session-1",
+    }
+    # Malformed hash.
+    append_event({**valid_event, "content_hash": "not-a-hash"})
+    # Future timestamp, otherwise well-formed and approved below.
+    append_event({**valid_event, "reviewed_at": "2999-01-01T00:00:00+00:00"})
+    # Well-formed but no accepted approval links it.
+    append_event(valid_event)
+    assert latest_review_event(
+        isolated_state, "router.md", now=datetime(2026, 7, 1, tzinfo=timezone.utc)
+    ) is None
+    report = audit_freshness(
+        isolated_state,
+        repo,
+        now=datetime(2026, 7, 1, tzinfo=timezone.utc),
+    )
+    assert report.time == ()
+    assert [item.state for item in report.concepts] == ["unknown"]
+
+    # Linking the valid line to an accepted approval makes it count.
+    _record_linked_review(
+        isolated_state,
+        target="router.md",
+        content_hash=content_hash,
+        reviewed_at="2026-06-01T00:00:00+00:00",
+    )
+    assert latest_review_event(
+        isolated_state, "router.md", now=datetime(2026, 7, 1, tzinfo=timezone.utc)
+    ) == (datetime(2026, 6, 1, tzinfo=timezone.utc), content_hash)
+    current = audit_freshness(
+        isolated_state,
+        repo,
+        now=datetime(2026, 6, 15, tzinfo=timezone.utc),
+    )
+    assert current.time[0].state == "current"
+
+
+def test_missing_gate_fails_closed(tmp_path: Path, isolated_state: Path) -> None:
+    repo = _repo(tmp_path)
+    _concept(isolated_state, "a.md", resource="kb:alpha/a")
+    index_bundle(isolated_state)
+    (isolated_state / ".eos" / "freshness-gate.json").unlink()
+
+    with pytest.raises(FreshnessValidationError) as raised:
+        audit_freshness(isolated_state, repo)
+    assert raised.value.code == "gate.missing"
+
+
+def test_corrupt_gate_fails_closed(tmp_path: Path, isolated_state: Path) -> None:
+    repo = _repo(tmp_path)
+    _concept(isolated_state, "a.md", resource="kb:alpha/a")
+    index_bundle(isolated_state)
+    (isolated_state / ".eos" / "freshness-gate.json").write_text("{truncated", encoding="utf-8")
+
+    with pytest.raises(FreshnessValidationError) as raised:
+        audit_freshness(isolated_state, repo)
+    assert raised.value.code == "gate.corrupt"
+    with pytest.raises(GateError) as gate_raised:
+        require_gate(isolated_state)
+    assert gate_raised.value.code == "gate.corrupt"
+
+
+def test_wrong_version_gate_fails_closed(tmp_path: Path, isolated_state: Path) -> None:
+    repo = _repo(tmp_path)
+    _concept(isolated_state, "a.md", resource="kb:alpha/a")
+    index_bundle(isolated_state)
+    gate_path = isolated_state / ".eos" / "freshness-gate.json"
+    gate_path.write_text(
+        json.dumps({"schema_version": 999, "activated_at": "2026-01-01T00:00:00+00:00", "docs": {}}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(FreshnessValidationError) as raised:
+        audit_freshness(isolated_state, repo)
+    assert raised.value.code == "gate.version_mismatch"
+
+
+def test_validate_is_read_only_and_refuses_without_gate(
+    tmp_path: Path, isolated_state: Path
+) -> None:
+    _concept(isolated_state, "a.md", resource="kb:alpha/a")
+    index_bundle(isolated_state)
+    (isolated_state / ".eos" / "freshness-gate.json").unlink()
+
+    report = validate_bundle(isolated_state)
+
+    assert ("gate.missing", "freshness-gate.json") in {(error.code, error.relative_file) for error in report.errors}
+    # No silent re-activation: the gate file is still gone.
+    assert not (isolated_state / ".eos" / "freshness-gate.json").exists()
+
+
+def test_edit_after_review_reports_stale_even_within_window(
+    tmp_path: Path,
+    isolated_state: Path,
+) -> None:
+    # A linked review at T0 with a 30d window is current at T0+10d, but any
+    # content edit without re-review forces stale with the same effective
+    # date: expiry survives the edit, even inside the window.
+    repo = _repo(tmp_path)
+    _concept(
+        isolated_state,
+        "router.md",
+        resource="kb:alpha/router",
+        freshness="tracked",
+        review_every="30d",
+        body="# Note\nroutertoken",
+    )
+    index_bundle(isolated_state)
+    _record_linked_review(
+        isolated_state,
+        target="router.md",
+        content_hash=_indexed_content_hash(isolated_state, "router.md"),
+        proposal_id="proposal-1",
+        session_id="session-1",
+        reviewed_at="2026-01-01T00:00:00+00:00",
+    )
+    _concept(
+        isolated_state,
+        "router.md",
+        resource="kb:alpha/router",
+        freshness="tracked",
+        review_every="30d",
+        body="# Note\nroutertoken edited",
+    )
+    index_bundle(isolated_state)
+
+    report = audit_freshness(
+        isolated_state,
+        repo,
+        now=datetime(2026, 1, 10, tzinfo=timezone.utc),
+    )
+
+    assert report.time[0].state == "stale"
+    assert report.time[0].stale_after == "2026-01-31T00:00:00+00:00"
+    assert report.overall == "stale"
+
+
+def test_unreindexed_edit_counts_as_edited_since_review(
+    tmp_path: Path,
+    isolated_state: Path,
+) -> None:
+    # The audit hashes tracked docs from disk, not the index manifest: an
+    # edit without reindex still mismatches the review event and reports
+    # stale. Under manifest-hash logic this would wrongly stay current.
+    repo = _repo(tmp_path)
+    _concept(
+        isolated_state,
+        "router.md",
+        resource="kb:alpha/router",
+        freshness="tracked",
+        review_every="30d",
+        body="# Note\nroutertoken",
+    )
+    index_bundle(isolated_state)
+    _record_linked_review(
+        isolated_state,
+        target="router.md",
+        content_hash=_indexed_content_hash(isolated_state, "router.md"),
+        proposal_id="proposal-1",
+        session_id="session-1",
+        reviewed_at="2026-01-01T00:00:00+00:00",
+    )
+    (isolated_state / "router.md").write_text(
+        (isolated_state / "router.md").read_text(encoding="utf-8") + "\n# extra\n",
+        encoding="utf-8",
+    )
+
+    report = audit_freshness(
+        isolated_state,
+        repo,
+        now=datetime(2026, 1, 10, tzinfo=timezone.utc),
+    )
+
+    assert report.time[0].state == "stale"
+    assert report.overall == "stale"
+
+
+def test_missing_review_ledger_fails_closed(tmp_path: Path, isolated_state: Path) -> None:
+    repo = _repo(tmp_path)
+    _concept(
+        isolated_state,
+        "router.md",
+        resource="kb:alpha/router",
+        freshness="tracked",
+        review_every="30d",
+        body="# Note\nroutertoken",
+    )
+    index_bundle(isolated_state)
+    _record_linked_review(
+        isolated_state,
+        target="router.md",
+        content_hash=_indexed_content_hash(isolated_state, "router.md"),
+        proposal_id="proposal-1",
+        session_id="session-1",
+        reviewed_at="2026-01-01T00:00:00+00:00",
+    )
+    (isolated_state / ".eos" / "reviews.jsonl").unlink()
+
+    with pytest.raises(FreshnessValidationError) as raised:
+        audit_freshness(isolated_state, repo)
+    assert raised.value.code == "reviews.missing"
+
+
+def test_missing_approvals_ledger_fails_closed(tmp_path: Path, isolated_state: Path) -> None:
+    repo = _repo(tmp_path)
+    _concept(
+        isolated_state,
+        "router.md",
+        resource="kb:alpha/router",
+        freshness="tracked",
+        review_every="30d",
+        body="# Note\nroutertoken",
+    )
+    index_bundle(isolated_state)
+    _record_linked_review(
+        isolated_state,
+        target="router.md",
+        content_hash=_indexed_content_hash(isolated_state, "router.md"),
+        proposal_id="proposal-1",
+        session_id="session-1",
+        reviewed_at="2026-01-01T00:00:00+00:00",
+    )
+    (isolated_state / ".eos" / "approvals.jsonl").unlink()
+
+    with pytest.raises(FreshnessValidationError) as raised:
+        audit_freshness(isolated_state, repo)
+    assert raised.value.code == "approvals.missing"
+
+
+def test_unreadable_review_ledger_fails_closed(tmp_path: Path, isolated_state: Path) -> None:
+    repo = _repo(tmp_path)
+    _concept(
+        isolated_state,
+        "router.md",
+        resource="kb:alpha/router",
+        freshness="tracked",
+        review_every="30d",
+        body="# Note\nroutertoken",
+    )
+    index_bundle(isolated_state)
+    _record_linked_review(
+        isolated_state,
+        target="router.md",
+        content_hash=_indexed_content_hash(isolated_state, "router.md"),
+        proposal_id="proposal-1",
+        session_id="session-1",
+        reviewed_at="2026-01-01T00:00:00+00:00",
+    )
+    ledger = isolated_state / ".eos" / "reviews.jsonl"
+    ledger.unlink()
+    ledger.mkdir()
+
+    with pytest.raises(FreshnessValidationError) as raised:
+        audit_freshness(isolated_state, repo)
+    assert raised.value.code == "reviews.unreadable"

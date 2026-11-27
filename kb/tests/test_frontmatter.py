@@ -529,3 +529,46 @@ def test_concept_schema_uses_non_blank_strings_where_runtime_does() -> None:
     for field in ("components", "symptoms", "source_paths", "supersedes"):
         assert concept_schema["$defs"]["eos"]["properties"][field]["items"] == non_blank
     assert concept_schema["$defs"]["claim"]["properties"]["id"] == non_blank
+
+
+def test_concept_schema_declares_freshness_contract_fields() -> None:
+    concept_schema = load_schema("concept", version=1, schema_dir=SCHEMA_DIR)
+
+    assert concept_schema["properties"]["freshness"] == {"enum": ["tracked", "historical"]}
+    assert concept_schema["properties"]["review_every"] == {"type": "string", "pattern": "^[1-9]\\d*d$"}
+    assert concept_schema["properties"]["reviewed_at"] == {"type": "string", "pattern": "\\S"}
+
+
+def test_freshness_contract_fields_parse_and_reject_bad_values() -> None:
+    concept = parse_concept_text(
+        """---
+type: Decision
+freshness: tracked
+review_every: 30d
+reviewed_at: '2026-01-01T00:00:00+00:00'
+---
+# Decision
+""",
+        "decisions/tracked.md",
+    )
+
+    assert concept.freshness_mode == "tracked"
+    assert concept.review_every == "30d"
+    assert concept.reviewed_at == "2026-01-01T00:00:00+00:00"
+
+    with pytest.raises(SchemaValidationError) as captured:
+        parse_concept_text(
+            "---\ntype: Decision\nfreshness: sometimes\n---\n",
+            "decisions/bad-mode.md",
+        )
+    assert captured.value.code == "schema.enum"
+    assert captured.value.field_path == "$.freshness"
+
+    for field in ("freshness", "review_every", "reviewed_at"):
+        with pytest.raises(SchemaValidationError) as blank:
+            parse_concept_text(
+                f"---\ntype: Decision\n{field}: '   '\n---\n",
+                "decisions/blank.md",
+            )
+        assert blank.value.code == "schema.type"
+        assert blank.value.field_path == f"$.{field}"

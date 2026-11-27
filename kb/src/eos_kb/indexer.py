@@ -4,15 +4,18 @@ import hashlib
 import json
 import os
 import posixpath
+import re
 import sqlite3
 import subprocess
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Iterable, Protocol
 from urllib.parse import urlsplit
 
 from .frontmatter import parse_concept
+from .gate import GateError, commit_gate_activation, is_new_doc, prepare_gate_activation, require_gate
 from .model import Concept, Status
 from .schema import SchemaValidationError
 from .storage import (
@@ -57,6 +60,95 @@ class CoverageContract(Protocol):
 
 _EXCLUDED_DIRECTORY_NAMES = {".eos", ".git"}
 
+_REVIEW_EVERY_RE = re.compile(r"([1-9]\d*)d")
+
+
+def parse_review_window(value: str | None) -> int | None:
+    """Parse a tracked doc window such as "30d" into days, else None."""
+    if not isinstance(value, str):
+        return None
+    match = _REVIEW_EVERY_RE.fullmatch(value.strip())
+    if match is None:
+        return None
+    return int(match.group(1))
+
+
+def _reviewed_at_valid(value: str | None) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return True
+
+
+def freshness_contract_errors(
+    concepts: list[Concept],
+    gate: dict | None,
+) -> list[IndexError]:
+    """Per-doc freshness contract diagnostics for validate and promote.
+
+    A doc is "new" when its path is absent from the gate activation snapshot
+    in the KB's ``.eos/`` state, so no git history is needed to tell new docs
+    from untagged existing ones. The stored index is rebuilt on every
+    promote and cannot serve as this boundary. Without a boundary record
+    nothing can be called new and the new-doc check is skipped.
+    """
+    errors: list[IndexError] = []
+    for concept in sorted(concepts, key=lambda item: item.relative_file):
+        if concept.generated:
+            continue
+        if concept.freshness_mode is None:
+            if gate is not None and is_new_doc(gate, concept.relative_file):
+                errors.append(
+                    IndexError(
+                        "freshness.contract_required",
+                        concept.relative_file,
+                        "Add 'freshness: tracked' or 'freshness: historical' to the YAML frontmatter.",
+                    )
+                )
+            continue
+        if concept.review_every is not None and parse_review_window(concept.review_every) is None:
+            errors.append(
+                IndexError(
+                    "freshness.review_window_invalid",
+                    concept.relative_file,
+                    "Set 'review_every' to a day count such as '30d'.",
+                )
+            )
+        elif concept.freshness_mode == "tracked" and concept.review_every is None:
+            # The window is mandatory for tracked docs: stale_after is inert
+            # and cannot substitute for it.
+            errors.append(
+                IndexError(
+                    "freshness.review_window_missing",
+                    concept.relative_file,
+                    "Tracked docs declare their own window with 'review_every: <n>d'.",
+                )
+            )
+        if concept.reviewed_at is not None and not _reviewed_at_valid(concept.reviewed_at):
+            errors.append(
+                IndexError(
+                    "freshness.reviewed_at_invalid",
+                    concept.relative_file,
+                    "Set 'reviewed_at' to an ISO-8601 timestamp.",
+                )
+            )
+    return errors
+
+
+def shadow_contract_errors(shadow: Path, gate: dict | None) -> list[IndexError]:
+    """Freshness contract over a promotion shadow tree, candidate included.
+
+    A promote must enforce the new-doc rule KB-wide, not just on the
+    candidate: an untagged new doc anywhere in the bundle fails the promote,
+    since promoting would otherwise launder it into the stored index.
+    Discovery errors are reported separately by the shadow index build.
+    """
+    concepts, _ = _discover(shadow)
+    return freshness_contract_errors(concepts, gate)
+
 
 def _metadata_hash(concept: Concept) -> str:
     payload = {
@@ -80,6 +172,9 @@ def _metadata_hash(concept: Concept) -> str:
         "verified": list(concept.verified),
         "source_revision": concept.source_revision,
         "stale_after": concept.stale_after,
+        "freshness_mode": concept.freshness_mode,
+        "review_every": concept.review_every,
+        "reviewed_at": concept.reviewed_at,
     }
     encoded = json.dumps(
         payload,
@@ -512,7 +607,7 @@ def _build_database(
     try:
         for concept in concepts:
             connection.execute(
-                "INSERT INTO concepts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO concepts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     concept.relative_file,
                     concept.resource,
@@ -533,6 +628,9 @@ def _build_database(
                     concept.body,
                     concept.source_revision,
                     concept.stale_after,
+                    concept.freshness_mode,
+                    concept.review_every,
+                    concept.reviewed_at,
                 ),
             )
             connection.execute(
@@ -773,6 +871,7 @@ def index_bundle(
     source_root: Path | None = None,
     coverage_rules: Iterable[CoverageContract] = (),
     state_path: Path | None = None,
+    activate_gate: bool = True,
 ) -> IndexReport:
     del rebuild
     root = root.expanduser().resolve()
@@ -782,6 +881,21 @@ def index_bundle(
     database = state / "index.sqlite3"
     manifest_path = state / "manifest.json"
     recovery = state / "transaction.json"
+
+    # Snapshot the gate boundary before anything is read or written: the
+    # activation must describe the pre-index tree, so a doc added mid-build
+    # is absent from the snapshot and counts as new instead of silently
+    # slipping into "existing". A corrupt gate file refuses the whole index
+    # instead of re-activating and moving the boundary. Shadow copies (state
+    # in a temp dir) opt out: the boundary belongs to the live KB.
+    pending_gate: dict | None = None
+    if activate_gate:
+        try:
+            pending_gate = prepare_gate_activation(root)
+        except GateError as exc:
+            return _current_report(
+                database, manifest_path, [IndexError(exc.code, "freshness-gate.json", str(exc))]
+            )
 
     if recovery.exists():
         with writer_lock(state):
@@ -871,6 +985,12 @@ def index_bundle(
                 allowed_destinations=allowed_destinations,
             )
             raise
+    # Commit the pre-build snapshot: the boundary describes the tree the
+    # index was built from. Committing here (after the build, outside the
+    # state lock) keeps the state->.eos lock order one-directional, and the
+    # commit is a no-op when another run activated first.
+    if activate_gate and pending_gate is not None:
+        commit_gate_activation(root, pending_gate)
     return IndexReport(database, manifest, [], sqlite3.connect(database))
 
 
@@ -925,6 +1045,14 @@ def validate_bundle(
     current_manifest, manifest_error = _load_manifest(manifest_path)
     connection, database_error = _open_existing_database(database)
     errors.extend(error for error in (manifest_error, database_error) if error)
+    # Read-only: validate never writes. A missing, corrupt, or version-skewed
+    # gate fails the check instead of silently re-activating.
+    try:
+        gate: dict | None = require_gate(root)
+    except GateError as exc:
+        errors.append(IndexError(exc.code, "freshness-gate.json", str(exc)))
+        gate = None
+    errors.extend(freshness_contract_errors(concepts, gate))
 
     if (
         current_manifest is None
