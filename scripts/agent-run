@@ -7,12 +7,16 @@
 # (1) survive the coordinator's shell, (2) read a durable brief from the KB, (3) work in its own git
 # worktree and database, (4) leave one hook-clean commit with a fixed subject and no trailer lines,
 # (5) print a fixed acceptance section. This script codifies that contract once.
+# Non-code briefs (probes, web research) use --dir DIR (plain directory, no branch) and usually
+# --no-commit (report-only: no commits, branches, or worktrees).
 #
 # Usage:
 #   agent-run start --agent codex --profile work --model gpt-5.6-sol \
 #       --brief ~/work/knowledge/logs/<brief>.md \
 #       --worktree /path/to/worktree            # existing, OR:
 #       --new-worktree t6/xyz --base <sha> --repo /path/to/repo   # created under <repo>/.claude/worktrees/<slug>
+#       --dir /path/to/scratch                  # OR: plain dir for non-code briefs
+#       [--no-commit]                             # report-only: no commits or branches
 #       [--db nova_agent_xyz] [--subject "refactor: NOVA-26 ..."] [--effort medium]
 #       [--review <git range>] [--extra "more instructions"] [--tag c7f]
 #   agent-run status <run-id> | log <run-id> [-f] | wait <run-id> | stop <run-id> | list
@@ -78,8 +82,8 @@ cmd_stop() {
 
 # ---------- prompt template ----------
 compose_prompt() {
-  # $1 brief $2 worktree $3 branch $4 base $5 db $6 subject $7 review_range $8 extra
-  local brief="$1" wt="$2" branch="$3" base="$4" db="$5" subject="$6" review="$7" extra="$8"
+  # $1 brief $2 worktree $3 branch $4 base $5 db $6 subject $7 review_range $8 extra $9 no_commit
+  local brief="$1" wt="$2" branch="$3" base="$4" db="$5" subject="$6" review="$7" extra="$8" no_commit="$9"
   local db_env="${AGENT_RUN_DB_ENV:-DATABASE_URL}" db_url="${AGENT_RUN_DB_URL_TEMPLATE//'{db}'/$db}"
   if [[ -n "$review" ]]; then
     cat <<EOF
@@ -91,10 +95,10 @@ EOF
   else
     cat <<EOF
 Implement the brief at $brief in full.
-You are in the git worktree $wt on branch $branch at HEAD $base; work only here, never cd to the main repository, never push, never touch .env, never use bare git stash.
+You are in the directory $wt$(if [[ "$branch" != "n/a" ]]; then printf ' (git worktree on branch %s at HEAD %s' "$branch" "$base"; fi); work only here, never cd to the main repository, never push, never touch .env, never use bare git stash.
 $( [[ -n "$db" ]] && echo "Create and use only your own database $db (export $db_env=$db_url in every shell that runs tests or hooks); never run migrations against any other database.")
 Read AGENTS.md and the Module Structure section of .claude/CLAUDE.md first (if they exist), then every file the brief names, then the brief's ground rules. Follow its work list in order.
-Commit work in progress after each work-list item with --no-verify as local safety checkpoints. Follow the brief's commit policy; squash into one commit only when the brief gives none. The final commit off $base must pass every pre-commit hook normally (if a formatter or the secrets scanner modifies files, git add -A and commit again).$( [[ -n "$subject" ]] && echo " Commit subject exactly: $subject") The commit message is a plain body with no trailer lines of any kind.
+$(if [[ -n "$no_commit" ]]; then printf 'Do not commit anything, even if the brief mentions commits: this run is report-only. Do not create branches or worktrees; work in place.'; else printf 'Commit work in progress after each work-list item with --no-verify as local safety checkpoints. Follow the brief'"'"'s commit policy; squash into one commit only when the brief gives none. The final commit off $base must pass every pre-commit hook normally (if a formatter or the secrets scanner modifies files, git add -A and commit again).'; fi)$( [[ -z "$no_commit" && -n "$subject" ]] && echo " Commit subject exactly: $subject") The commit message is a plain body with no trailer lines of any kind.
 End by printing the brief's acceptance items verbatim as your final message.
 EOF
   fi
@@ -104,7 +108,7 @@ EOF
 
 # ---------- launch ----------
 cmd_start() {
-  local agent="" profile="work" model="" brief="" wt="" new_branch="" base="" repo="" db="" subject="" effort="" review="" extra="" tag="" prompt_override="" dry_run=0
+  local agent="" profile="work" model="" brief="" wt="" new_branch="" base="" repo="" db="" subject="" effort="" review="" extra="" tag="" prompt_override="" dry_run=0 plain_dir="" no_commit=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --dry-run) dry_run=1; shift ;;
@@ -114,6 +118,8 @@ cmd_start() {
       --brief) brief="$2"; shift 2 ;;
       --worktree) wt="$2"; shift 2 ;;
       --new-worktree) new_branch="$2"; shift 2 ;;
+      --dir) plain_dir="$2"; shift 2 ;;
+      --no-commit) no_commit=1; shift ;;
       --base) base="$2"; shift 2 ;;
       --repo) repo="$2"; shift 2 ;;
       --db) db="$2"; shift 2 ;;
@@ -132,7 +138,12 @@ cmd_start() {
   [[ -z "$brief" || -f "$brief" ]] || die "brief not found: $brief"
   [[ "$profile" == work || "$profile" == personal ]] || die "--profile must be work or personal"
 
-  # worktree
+  # worktree (or plain dir for non-code briefs: no branch, no commit)
+  if [[ -n "$plain_dir" ]]; then
+    [[ -z "$wt$new_branch" ]] || die "--dir cannot be combined with --worktree/--new-worktree"
+    [[ -d "$plain_dir" || "$dry_run" == 1 ]] || die "--dir DIR must exist"
+    wt="$plain_dir"
+  fi
   if [[ -n "$new_branch" ]]; then
     [[ -n "$repo" && -d "$repo" ]] || die "--new-worktree needs --repo DIR"
     base="${base:-$(git -C "$repo" rev-parse --short HEAD)}"
@@ -141,14 +152,16 @@ cmd_start() {
     [[ -e "$wt" ]] && die "worktree path exists: $wt"
     if [[ "$dry_run" == 1 ]]; then echo "[dry-run] would: git -C $repo worktree add $wt -b $new_branch $base"; else git -C "$repo" worktree add "$wt" -b "$new_branch" "$base" >/dev/null; fi
   fi
-  [[ -n "$wt" && ( -d "$wt" || "$dry_run" == 1 ) ]] || die "--worktree DIR (existing) or --new-worktree BRANCH --repo DIR is required"
-  local branch; branch="${new_branch:-$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')}"
-  base="${base:-$(git -C "$wt" rev-parse --short HEAD 2>/dev/null || echo '?')}"
+  [[ -n "$wt" && ( -d "$wt" || "$dry_run" == 1 ) ]] || die "--worktree DIR (existing), --new-worktree BRANCH --repo DIR, or --dir DIR is required"
+  local branch; branch="$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'n/a')"
+  [[ "$branch" == "?" ]] && branch="n/a"
+  if [[ -n "$new_branch" ]]; then branch="$new_branch"; fi
+  base="${base:-$(git -C "$wt" rev-parse --short HEAD 2>/dev/null || echo 'n/a')}"
 
   # run dir
   local id; id="$(date +%Y%m%d-%H%M%S)-${agent}${tag:+-$tag}"
   local dir; dir="$(run_dir "$id")"
-  local prompt; if [[ -n "$prompt_override" ]]; then prompt="$prompt_override"; else prompt="$(compose_prompt "$brief" "$wt" "$branch" "$base" "$db" "$subject" "$review" "$extra")"; fi
+  local prompt; if [[ -n "$prompt_override" ]]; then prompt="$prompt_override"; else prompt="$(compose_prompt "$brief" "$wt" "$branch" "$base" "$db" "$subject" "$review" "$extra" "$no_commit")"; fi
 
   # agent command (through the EOS wrapper so kb session/doctor/audit apply)
   local -a cmd; local kb
@@ -169,7 +182,7 @@ cmd_start() {
     *) die "unknown agent: $agent" ;;
   esac
   if [[ "$dry_run" == 1 ]]; then
-    echo "[dry-run] run id would be: $id"; echo "[dry-run] worktree: $wt ($branch @ $base)"
+    echo "[dry-run] run id would be: $id"; echo "[dry-run] worktree: $wt ($branch @ $base)${no_commit:+ [no-commit]}"
     echo "[dry-run] command:"; printf '  %q' "${cmd[@]}"; echo
     echo "[dry-run] prompt:"; printf '%s\n' "$prompt" | sed 's/^/  | /'
     return 0

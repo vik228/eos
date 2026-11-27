@@ -83,6 +83,19 @@ out="$("$script" start --dry-run --agent codex --brief "$brief" \
 [[ ! -e "$repo/.claude/worktrees/feat-new-one" ]]
 [[ "$out" == *"on branch feat/new-one at HEAD $base"* ]]
 
+# --dir + --no-commit for non-code briefs: plain dir, report-only prompt
+mkdir -p "$tmp/scratch"
+out="$("$script" start --dry-run --agent claude --profile personal \
+  --brief "$brief" --dir "$tmp/scratch" --no-commit)"
+[[ "$out" == *"[no-commit]"* ]]
+[[ "$out" == *"Do not commit anything"* ]]
+[[ "$out" != *"Commit work in progress"* ]]
+[[ "$out" != *"squash into one commit"* ]]
+[[ "$out" == *"acceptance items verbatim"* ]]
+# --dir refuses worktree combos and missing dirs
+! "$script" start --dry-run --agent codex --brief "$brief" --dir "$tmp/scratch" --worktree "$repo" >/dev/null 2>&1
+! "$script" start --dry-run --agent codex --brief "$brief" --dir "$tmp/nope" >/dev/null 2>&1
+
 # dry-run leaves no run directory behind
 [[ -z "$(ls -A "$EOS_AGENT_RUNS_DIR" 2>/dev/null)" ]]
 
