@@ -132,7 +132,7 @@ def test_handoff_needs_input_and_followup_resume(tmp_path: Path) -> None:
     # Fake agent writes handoff.json with state=needs_input into its run_dir
     script_turn1 = (
         "import json, pathlib; "
-        f"rd = sorted(pathlib.Path({str(runs_dir)!r}).iterdir())[-1]; "
+        f"rd = sorted(p for p in pathlib.Path({str(runs_dir)!r}).iterdir() if p.is_dir())[-1]; "
         "payload = {'state': 'needs_input', 'summary': 'Found 2 retry queues', "
         "'questions': ['Should we drain dead-letter queue first?'], 'next_step': 'Run fix script'}; "
         "(rd / 'handoff.json').write_text(json.dumps(payload))"
@@ -155,11 +155,11 @@ def test_handoff_needs_input_and_followup_resume(tmp_path: Path) -> None:
     assert st["status"] == "needs_input"
     assert st["handoff"]["questions"] == ["Should we drain dead-letter queue first?"]
 
-    mcp_st = dispatch_tool(kb, "work", "agent_status", {"run_id": run_id})
+    mcp_st = dispatch_tool(kb, "work", "agent_status", {})
     assert "Needs Your Input" in mcp_st["text"]
     assert "Should we drain dead-letter queue first?" in mcp_st["text"]
 
-    # Follow-up archives turn 1 handoff and completes
+    # Follow-up without run_id uses the sticky active session, archives turn 1 handoff, and completes
     script_turn2 = (
         "import json, pathlib; "
         f"rd = pathlib.Path({str(runs_dir / run_id)!r}); "
@@ -167,7 +167,6 @@ def test_handoff_needs_input_and_followup_resume(tmp_path: Path) -> None:
     )
     followup_remote_agent(
         "work",
-        run_id=run_id,
         prompt="Yes, drain DLQ first",
         command_override=[sys.executable, "-c", script_turn2],
     )

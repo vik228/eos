@@ -273,6 +273,64 @@ def _tmux_session_exists(socket_name: str, session_name: str) -> bool:
     return res.returncode == 0
 
 
+def _active_run_file(profile: str) -> Path:
+    return _runs_root(profile) / "active_run.txt"
+
+
+def set_active_run(profile: str, run_id: str) -> None:
+    _active_run_file(profile).write_text(f"{run_id.strip()}\n", encoding="utf-8")
+
+
+def get_active_run(profile: str) -> str | None:
+    path = _active_run_file(profile)
+    if not path.is_file():
+        return None
+    val = path.read_text(encoding="utf-8").strip()
+    return val or None
+
+
+def _resolve_run_id(profile: str, run_id: str | None) -> str:
+    cleaned = (run_id or "").strip()
+    if cleaned:
+        return cleaned
+    active = get_active_run(profile)
+    if not active:
+        raise RemoteAgentError(
+            f"No active remote agent session for '{profile}'. Start one with agent_start or pass run_id."
+        )
+    return active
+
+
+def _ensure_tmux_profile_running(socket_name: str, session_name: str, cwd: Path) -> bool:
+    if _tmux_session_exists(socket_name, session_name):
+        return True
+    tmux_bin = shutil.which("tmux")
+    if not tmux_bin:
+        return False
+    ws_script = _eos_root() / "scripts" / "eos-workspace"
+    if ws_script.is_file() and os.access(ws_script, os.X_OK):
+        env = os.environ.copy()
+        env["EOS_NO_ATTACH"] = "1"
+        env["EOS_WORKSPACE_FORCE_TMUX"] = "1"
+        subprocess.run(
+            [str(ws_script), session_name],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        if _tmux_session_exists(socket_name, session_name):
+            return True
+    # Fallback: start a clean detached tmux session on the EOS socket
+    res = subprocess.run(
+        [tmux_bin, "-L", socket_name, "new-session", "-d", "-s", session_name, "-c", str(cwd)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return res.returncode == 0 and _tmux_session_exists(socket_name, session_name)
+
+
 def start_remote_agent(
     profile: str,
     *,
@@ -325,7 +383,7 @@ def start_remote_agent(
         command_override is None
         and os.environ.get("EOS_REMOTE_AGENTS_NO_TMUX") != "1"
         and bool(tmux_socket and target_tmux)
-        and _tmux_session_exists(tmux_socket, target_tmux)
+        and _ensure_tmux_profile_running(tmux_socket, target_tmux, resolved_cwd)
     )
     window_name = _slugify(name_clean)[:24] if use_tmux else None
 
@@ -366,6 +424,7 @@ def start_remote_agent(
         proc = _spawn_detached_runner(run_dir)
         meta["pid"] = proc.pid
     _write_meta(run_dir, meta)
+    set_active_run(profile, run_id)
     return meta
 
 
@@ -442,19 +501,20 @@ def _spawn_detached_runner(run_dir: Path) -> subprocess.Popen[bytes]:
 def followup_remote_agent(
     profile: str,
     *,
-    run_id: str,
+    run_id: str | None = None,
     prompt: str,
     command_override: list[str] | None = None,
 ) -> dict[str, Any]:
     prompt_clean = (prompt or "").strip()
     if not prompt_clean:
         raise RemoteAgentError("prompt must be non-empty.")
-    run_dir = _runs_root(profile) / run_id
+    resolved_id = _resolve_run_id(profile, run_id)
+    run_dir = _runs_root(profile) / resolved_id
     meta = _sync_live_state(run_dir)
     if meta.get("agent") != "claude":
         raise RemoteAgentError("Follow-up resume is currently supported only for Claude Code sessions.")
     if meta.get("status") == "running" and _pid_alive(meta.get("pid")):
-        raise RemoteAgentError(f"Run '{run_id}' is still running; wait for it to finish or stop it first.")
+        raise RemoteAgentError(f"Run '{resolved_id}' is still running; wait for it to finish or stop it first.")
 
     handoff_path = run_dir / "handoff.json"
     if handoff_path.is_file():
@@ -488,6 +548,7 @@ def followup_remote_agent(
     proc = _spawn_detached_runner(run_dir)
     meta["pid"] = proc.pid
     _write_meta(run_dir, meta)
+    set_active_run(profile, resolved_id)
     return meta
 
 
@@ -503,8 +564,9 @@ def list_remote_agents(profile: str, *, limit: int = 10) -> list[dict[str, Any]]
     return runs
 
 
-def status_remote_agent(profile: str, *, run_id: str) -> dict[str, Any]:
-    run_dir = _runs_root(profile) / run_id
+def status_remote_agent(profile: str, *, run_id: str | None = None) -> dict[str, Any]:
+    resolved_id = _resolve_run_id(profile, run_id)
+    run_dir = _runs_root(profile) / resolved_id
     meta = _sync_live_state(run_dir)
     log_path = run_dir / "output.log"
     if meta.get("agent") == "claude":
@@ -517,8 +579,9 @@ def status_remote_agent(profile: str, *, run_id: str) -> dict[str, Any]:
     return {**meta, "handoff": handoff, "recent_events": recent, "final_result": final_result}
 
 
-def logs_remote_agent(profile: str, *, run_id: str, tail_lines: int = 40) -> dict[str, Any]:
-    run_dir = _runs_root(profile) / run_id
+def logs_remote_agent(profile: str, *, run_id: str | None = None, tail_lines: int = 40) -> dict[str, Any]:
+    resolved_id = _resolve_run_id(profile, run_id)
+    run_dir = _runs_root(profile) / resolved_id
     meta = _sync_live_state(run_dir)
     log_path = run_dir / "output.log"
     tail_n = max(5, min(int(tail_lines), 200))
@@ -529,11 +592,12 @@ def logs_remote_agent(profile: str, *, run_id: str, tail_lines: int = 40) -> dic
         lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines() if log_path.is_file() else []
         text = "\n".join(lines[-tail_n:]) if lines else "(no output yet)"
         final_result = None
-    return {"run_id": run_id, "status": meta["status"], "name": meta["name"], "text": text, "final_result": final_result}
+    return {"run_id": resolved_id, "status": meta["status"], "name": meta["name"], "text": text, "final_result": final_result}
 
 
-def stop_remote_agent(profile: str, *, run_id: str) -> dict[str, Any]:
-    run_dir = _runs_root(profile) / run_id
+def stop_remote_agent(profile: str, *, run_id: str | None = None) -> dict[str, Any]:
+    resolved_id = _resolve_run_id(profile, run_id)
+    run_dir = _runs_root(profile) / resolved_id
     meta = _sync_live_state(run_dir)
     pid = meta.get("pid")
     if pid and _pid_alive(pid):

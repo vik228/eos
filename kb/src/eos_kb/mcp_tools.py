@@ -480,7 +480,7 @@ def tool_agent_list(kb_root: Path, profile: str, *, limit: int = 10) -> dict[str
     return {"text": "\n".join(lines), "runs": runs}
 
 
-def tool_agent_status(kb_root: Path, profile: str, *, run_id: str) -> dict[str, Any]:
+def tool_agent_status(kb_root: Path, profile: str, *, run_id: str | None = None) -> dict[str, Any]:
     try:
         st = status_remote_agent(profile, run_id=run_id)
     except RemoteAgentError as exc:
@@ -510,34 +510,34 @@ def tool_agent_status(kb_root: Path, profile: str, *, run_id: str) -> dict[str, 
     return {"text": "\n".join(lines), "status": st}
 
 
-def tool_agent_logs(kb_root: Path, profile: str, *, run_id: str, tail_lines: int = 40) -> dict[str, Any]:
+def tool_agent_logs(kb_root: Path, profile: str, *, run_id: str | None = None, tail_lines: int = 40) -> dict[str, Any]:
     try:
         res = logs_remote_agent(profile, run_id=run_id, tail_lines=tail_lines)
     except RemoteAgentError as exc:
         raise McpToolError(str(exc)) from exc
     return {
-        "text": f"Logs for **{res['name']}** (`{run_id}` | {res['status']}):\n\n{res['text']}",
+        "text": f"Logs for **{res['name']}** (`{res['run_id']}` | {res['status']}):\n\n{res['text']}",
         "logs": res,
     }
 
 
-def tool_agent_followup(kb_root: Path, profile: str, *, run_id: str, prompt: str) -> dict[str, Any]:
+def tool_agent_followup(kb_root: Path, profile: str, *, run_id: str | None = None, prompt: str) -> dict[str, Any]:
     try:
         meta = followup_remote_agent(profile, run_id=run_id, prompt=prompt)
     except RemoteAgentError as exc:
         raise McpToolError(str(exc)) from exc
     return {
-        "text": f"Resumed **{meta['name']}** (`{run_id}`, turn {meta['turns']}). Monitor with `agent_status`.",
+        "text": f"Resumed **{meta['name']}** (`{meta['run_id']}`, turn {meta['turns']}). Monitor with `agent_status`.",
         "run": meta,
     }
 
 
-def tool_agent_stop(kb_root: Path, profile: str, *, run_id: str) -> dict[str, Any]:
+def tool_agent_stop(kb_root: Path, profile: str, *, run_id: str | None = None) -> dict[str, Any]:
     try:
         meta = stop_remote_agent(profile, run_id=run_id)
     except RemoteAgentError as exc:
         raise McpToolError(str(exc)) from exc
-    return {"text": f"Stopped **{meta['name']}** (`{run_id}`).", "run": meta}
+    return {"text": f"Stopped **{meta['name']}** (`{meta['run_id']}`).", "run": meta}
 
 
 TOOL_DEFINITIONS: list[dict[str, Any]] = [
@@ -706,48 +706,45 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "agent_status",
-        "description": "Check live status, recent tool activity, final result, and local resume command for a remote agent session.",
+        "description": "Check live status, questions/doubts, final result, and local resume command. Defaults to the profile's active session if run_id is omitted.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "run_id": {"type": "string", "description": "Run ID returned by agent_start or agent_list."},
+                "run_id": {"type": "string", "description": "Optional run ID (defaults to the active session for this profile)."},
             },
-            "required": ["run_id"],
         },
     },
     {
         "name": "agent_logs",
-        "description": "Read formatted recent progress logs from a remote coding agent session.",
+        "description": "Read formatted recent progress logs from a remote coding agent session. Defaults to the active session if run_id is omitted.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "run_id": {"type": "string", "description": "Run ID of the session."},
+                "run_id": {"type": "string", "description": "Optional run ID (defaults to the active session)."},
                 "tail_lines": {"type": "integer", "description": "Number of recent events/lines (default 40).", "default": 40},
             },
-            "required": ["run_id"],
         },
     },
     {
         "name": "agent_followup",
-        "description": "Send a follow-up prompt to resume a completed remote Claude Code session under the same session ID and name.",
+        "description": "Send a follow-up prompt or answer a doubt to resume the active (or specified) remote Claude Code session.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "run_id": {"type": "string", "description": "Run ID of the Claude Code session."},
-                "prompt": {"type": "string", "description": "Follow-up instruction."},
+                "run_id": {"type": "string", "description": "Optional run ID (defaults to the active session)."},
+                "prompt": {"type": "string", "description": "Follow-up instruction or answer to the agent's question."},
             },
-            "required": ["run_id", "prompt"],
+            "required": ["prompt"],
         },
     },
     {
         "name": "agent_stop",
-        "description": "Stop a currently running remote coding agent session.",
+        "description": "Stop the active (or specified) running remote coding agent session.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "run_id": {"type": "string", "description": "Run ID of the session to stop."},
+                "run_id": {"type": "string", "description": "Optional run ID (defaults to the active session)."},
             },
-            "required": ["run_id"],
         },
     },
 ]
@@ -834,21 +831,21 @@ def dispatch_tool(kb_root: Path, profile: str, name: str, arguments: dict[str, A
     if name == "agent_list":
         return tool_agent_list(kb_root, profile, limit=int(args.get("limit", 10)))
     if name == "agent_status":
-        return tool_agent_status(kb_root, profile, run_id=str(args.get("run_id") or ""))
+        return tool_agent_status(kb_root, profile, run_id=args.get("run_id"))
     if name == "agent_logs":
         return tool_agent_logs(
             kb_root,
             profile,
-            run_id=str(args.get("run_id") or ""),
+            run_id=args.get("run_id"),
             tail_lines=int(args.get("tail_lines", 40)),
         )
     if name == "agent_followup":
         return tool_agent_followup(
             kb_root,
             profile,
-            run_id=str(args.get("run_id") or ""),
+            run_id=args.get("run_id"),
             prompt=str(args.get("prompt") or ""),
         )
     if name == "agent_stop":
-        return tool_agent_stop(kb_root, profile, run_id=str(args.get("run_id") or ""))
+        return tool_agent_stop(kb_root, profile, run_id=args.get("run_id"))
     raise McpToolError(f"Unknown tool: {name}")
