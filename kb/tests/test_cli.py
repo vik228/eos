@@ -623,6 +623,51 @@ def test_lifecycle_commands_block_before_persistence_for_invalid_audit(
     assert persisted is False
 
 
+def test_lifecycle_block_names_stale_blockers_without_unknown_advisories(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    workspace = tmp_path / "workspace"
+    kb = tmp_path / "knowledge"
+    workspace.mkdir()
+    kb.mkdir()
+    route = WorkspaceRoute(workspace, kb, "demo")
+    report = SimpleNamespace(
+        overall="stale",
+        warnings=(
+            "freshness unknown: kb:demo/b",
+            "time stale: kb:demo/a (2026-01-01T00:00:00+00:00)",
+        ),
+        contradictions=(),
+    )
+
+    monkeypatch.setattr("eos_kb.cli._resolve_retrieval_route", lambda args: route)
+    monkeypatch.setattr("eos_kb.cli.audit_freshness", lambda *args, **kwargs: report)
+
+    exit_code = main(["session", "checkpoint", "s1", "--kb", str(kb), "--json"])
+
+    assert exit_code == ExitCode.BLOCKED_LIFECYCLE
+    result = json.loads(capsys.readouterr().err)
+    assert result["error"]["code"] == "freshness.lifecycle_blocked"
+    assert "time stale: kb:demo/a (2026-01-01T00:00:00+00:00)" in result["message"]
+    assert "freshness unknown" not in result["message"]
+
+
+def test_validate_text_output_includes_offending_file(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    missing = tmp_path / "missing"
+
+    exit_code = main(["validate", "--kb", str(missing)])
+
+    captured = capsys.readouterr()
+    assert exit_code == ExitCode.VALIDATION
+    assert captured.out == ""
+    assert "[manifest.json]" in captured.err
+
+
 @pytest.mark.parametrize("command", ("checkpoint", "end"))
 def test_lifecycle_allows_unknown_freshness_as_advisory(
     command: str,

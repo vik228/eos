@@ -516,7 +516,13 @@ def _lifecycle_audit(route: WorkspaceRoute, command: str) -> CommandResult | Non
     if report.overall != "stale" and not contradictions:
         return None
 
-    reasons = list(warnings)
+    # Unknown findings are advisory: they stay visible in audit output and the
+    # JSON report payload, but they must not name the lifecycle blocker.
+    # Confirmed stale evidence and contradictions are the blockers, so they
+    # lead the message in their original audit order (time findings already
+    # carry their stale_after dates).
+    blocking = [reason for reason in warnings if "unknown" not in reason]
+    reasons = blocking
     if contradictions and not any("contradiction" in reason for reason in reasons):
         reasons.append(f"{len(contradictions)} contradiction(s) detected")
     if not reasons:
@@ -938,7 +944,10 @@ def _render(result: CommandResult, *, as_json: bool, stream: TextIO) -> None:
             for item in result.data:
                 print(f"- {item.get('resource', item.get('relative_file'))}: {item.get('title', '')}", file=stream)
     elif result.error_code is not None:
-        print(f"error[{result.error_code}]: {result.message}", file=stream)
+        detail = result.message
+        if result.error_field and not result.error_field.startswith("$"):
+            detail = f"{detail} [{result.error_field}]"
+        print(f"error[{result.error_code}]: {detail}", file=stream)
     else:
         print(f"error[{result.status}]: {result.message}", file=stream)
 

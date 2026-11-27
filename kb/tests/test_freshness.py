@@ -251,6 +251,30 @@ def test_a_log_is_a_dated_record_and_never_goes_time_stale(
     assert report.overall != "stale"
 
 
+def test_a_deprecated_concept_is_frozen_and_never_goes_time_stale(
+    tmp_path: Path,
+    isolated_state: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    _concept(
+        isolated_state,
+        "projects/alpha/retired.md",
+        resource="kb:alpha/retired",
+        stale_after="2026-01-01T00:00:00+00:00",
+        status="deprecated",
+    )
+    index_bundle(isolated_state)
+
+    report = audit_freshness(
+        isolated_state,
+        repo,
+        now=datetime(2026, 7, 1, tzinfo=timezone.utc),
+    )
+
+    assert report.time == ()
+    assert report.overall != "stale"
+
+
 def test_unverified_external_file_is_unknown_without_being_read(
     tmp_path: Path,
     isolated_state: Path,

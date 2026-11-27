@@ -240,7 +240,7 @@ try:
  args=tc.get("args") if isinstance(tc.get("args"), dict) else {}
  print(t.get("command") or t.get("CommandLine") or args.get("CommandLine") or args.get("command") or "")
 except Exception: print("")')"
-    if printf '%s' "$command_text" | grep -Eiq '(^|[[:space:]])(git[[:space:]]+(commit|push)|gh[[:space:]]+pr)([[:space:]]|$)|Co-authored-by:|co-authored-by:|session(url|_url)|attribution'; then
+    if printf '%s' "$command_text" | grep -Eiq '(^|[[:space:]])(git[[:space:]]+(commit|push)|gh[[:space:]]+pr)([[:space:]]|$)|Co-authored-by:|co-authored-by:|session(url|_url)'; then
       if printf '%s' "$command_text" | grep -Eiq 'Co-authored-by:|co-authored-by:|session(url|_url)|attribution'; then
         emit_block "Agent attribution and session URL injection are prohibited in commit and PR commands. Remove the trailer or attribution flags."
         exit 0
@@ -279,15 +279,35 @@ except Exception: print("")')"
         exit 0
       fi
     fi
-    if ! "$kb" checkpoint "${kb_args[@]}" --session "$session" --json >/dev/null 2>&1; then
+    checkpoint_output=""
+    if ! checkpoint_output="$("$kb" checkpoint "${kb_args[@]}" --session "$session" --json 2>&1)"; then
       # Long-running agents can outlive the lease. Resume only the session
       # created and exported by the wrapper, then retry the checkpoint once.
       resume_args=(session resume "$session")
       [[ -n "$native_session" ]] && resume_args+=(--native-id "$native_session")
       "$kb" "${resume_args[@]}" "${kb_args[@]}" --json >/dev/null 2>&1 || true
-      if ! "$kb" checkpoint "${kb_args[@]}" --session "$session" --json >/dev/null 2>&1; then
+      if ! checkpoint_output="$("$kb" checkpoint "${kb_args[@]}" --session "$session" --json 2>&1)"; then
+        checkpoint_reason="$(printf '%s' "$checkpoint_output" | python3 -c 'import json,sys
+text = sys.stdin.read()
+reason = ""
+for line in text.splitlines():
+    line = line.strip()
+    if not line.startswith("{"):
+        continue
+    try:
+        d = json.loads(line)
+    except Exception:
+        continue
+    msg = d.get("message")
+    if isinstance(msg, str) and msg.strip():
+        reason = msg.strip().splitlines()[0][:300]
+        break
+print(reason)
+')"
         if printf '%s' "$prompt_text" | grep -Eiq '\b(blocked|blocker)\b'; then
           emit_message "Recorded blocker accepted; report blocked work with the blocker and next required input."
+        elif [[ -n "$checkpoint_reason" ]]; then
+          emit_block "Checkpoint is required before completion. Run kb checkpoint and resolve any reported validation or investigation gate. Detail: $checkpoint_reason"
         else
           emit_block "Checkpoint is required before completion. Run kb checkpoint and resolve any reported validation or investigation gate."
         fi

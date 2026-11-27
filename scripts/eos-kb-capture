@@ -76,6 +76,29 @@ if [[ -z "${DRY_RUN:-}" && "$session_id" != nosid ]]; then
   mkdir -p "$(dirname "$marker")"
   mkdir "$marker" 2>/dev/null || { log_debug "skip event already captured"; exit 0; }
 fi
+# Per-segment watermark: remember how many transcript lines were already
+# captured for this session, so a resumed session with a grown transcript
+# only sends the new lines. The byte-size marker above dedupes identical
+# repeats; this sidecar makes resumes incremental. Open-item dedup behavior
+# is unchanged.
+offset_file="$kb/logs/.capture-offset-$event-$session_id"
+last_lines=0
+if [[ "$session_id" != nosid && -f "$offset_file" ]]; then
+  last_lines="$(tr -cd '0-9' <"$offset_file" 2>/dev/null || true)"
+  [[ "$last_lines" =~ ^[0-9]+$ ]] || last_lines=0
+fi
+total_lines="$(wc -l <"$transcript" 2>/dev/null | tr -d ' ' || true)"
+[[ "$total_lines" =~ ^[0-9]+$ ]] || total_lines=0
+capture_input="$transcript"
+segment_file=""
+segment_note=""
+if [[ -z "${DRY_RUN:-}" && "$session_id" != nosid && "$last_lines" -gt 0 && "$total_lines" -gt "$last_lines" ]]; then
+  segment_file="$(mktemp "${TMPDIR:-/tmp}/eos-kb-capture-segment-XXXXXX")"
+  trap 'rm -f "$segment_file"' EXIT
+  tail -n +"$((last_lines + 1))" "$transcript" >"$segment_file"
+  capture_input="$segment_file"
+  segment_note="This is an incremental capture: lines $((last_lines + 1))-$total_lines of $transcript (lines 1-$last_lines were captured before). Capture only this new segment."
+fi
 date_value="$(date +%F)"
 year="${date_value%%-*}"
 stale_after="$(date -v+3m +%F 2>/dev/null || date -d '+3 months' +%F)"
@@ -96,8 +119,9 @@ fi
 read -r -d '' prompt <<PROMPT_EOF || true
 You are the EOS $profile KB session-capture agent. Read this transcript:
 
-$transcript
+$capture_input
 
+$segment_note
 Write only a concise dated log under $log_dir and reviewable checkbox proposals to the correct pending queues.
 
 Every NEW log must start with this frontmatter:
@@ -135,7 +159,31 @@ log_debug "capturing transcript"
 case "$agent" in
   claude)
     claude_bin="${CLAUDE_BIN:-$(command -v claude || printf '/usr/local/bin/claude')}"
+    # Headless `claude -p` inherits CLAUDE_CONFIG_DIR, so each capture writes
+    # a junk session next to real work under <config>/projects. Snapshot the
+    # *.jsonl set before the run; anything new afterwards is moved aside to a
+    # backup dir, never deleted.
+    claude_projects_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects"
+    resume_snapshot="$(mktemp "${TMPDIR:-/tmp}/eos-kb-capture-resume-XXXXXX")"
+    if [[ -d "$claude_projects_dir" ]]; then
+      find "$claude_projects_dir" -type f -name '*.jsonl' 2>/dev/null | LC_ALL=C sort >"$resume_snapshot" || true
+    else
+      : >"$resume_snapshot"
+    fi
     EOS_KB_CAPTURE_RUNNING=1 "$claude_bin" -p "$prompt" --allowedTools Read Write Edit --permission-mode acceptEdits >>"$debug" 2>&1 || log_debug "capture command failed"
+    if [[ -d "$claude_projects_dir" ]]; then
+      junk_backup="$kb/logs/.capture-resume-backup"
+      mkdir -p "$junk_backup"
+      while IFS= read -r jsonl; do
+        [[ -n "$jsonl" ]] || continue
+        if ! grep -Fxq "$jsonl" "$resume_snapshot" 2>/dev/null; then
+          dest="$junk_backup/$(basename "$jsonl")"
+          if [[ -e "$dest" ]]; then dest="$junk_backup/$(date +%s)-$$-$(basename "$jsonl")"; fi
+          mv -f "$jsonl" "$dest" 2>/dev/null && log_debug "moved capture resume junk to $dest" || log_debug "could not move capture resume junk $jsonl"
+        fi
+      done < <(find "$claude_projects_dir" -type f -name '*.jsonl' 2>/dev/null | LC_ALL=C sort)
+    fi
+    rm -f "$resume_snapshot"
     ;;
   codex)
     codex_home="${CODEX_CAPTURE_HOME:-${CODEX_HOME:-$HOME/.codex-$profile}}"
@@ -143,4 +191,10 @@ case "$agent" in
     ;;
   *) echo "EOS_CAPTURE_AGENT must be claude or codex" >&2; exit 2 ;;
 esac
+if [[ -z "${DRY_RUN:-}" && "$session_id" != nosid ]]; then
+  total_lines_now="$(wc -l <"$transcript" 2>/dev/null | tr -d ' ' || true)"
+  [[ "$total_lines_now" =~ ^[0-9]+$ ]] || total_lines_now=0
+  printf '%s\n' "$total_lines_now" >"$offset_file"
+fi
+if [[ -n "${segment_file:-}" ]]; then rm -f "$segment_file"; fi
 [[ ! -x "$dedupe" ]] || "$dedupe" "$kb" >>"$debug" 2>&1

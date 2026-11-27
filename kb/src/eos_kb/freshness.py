@@ -570,7 +570,9 @@ def audit_freshness(
 
         # A Log is a dated record of what happened; it cannot go out of date, so its
         # stale_after is ignored rather than blocking the lifecycle when it passes.
-        if row["stale_after"] and row["type"] != "Log":
+        # Deprecated concepts are frozen in the same way: the claims check below
+        # already skips deprecated owners, so time must not flag them either.
+        if row["stale_after"] and row["type"] != "Log" and row["status"] != "deprecated":
             stale_at = _parse_time(row["stale_after"])
             time_state = "unknown" if stale_at is None else (
                 "stale" if generated >= stale_at else "current"

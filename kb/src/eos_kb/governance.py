@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
 import tempfile
 import uuid
@@ -112,7 +113,12 @@ def _session(root: Path, session_id: str, *, lifecycle: bool = False) -> dict[st
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise GovernanceError("governance.session_missing", "A valid session record is required.") from exc
+        raise GovernanceError(
+            "governance.session_missing",
+            f"A valid session record is required for session '{session_id}'. "
+            "Start one with: kb session start --kb <kb-root> --cwd <workspace> "
+            "--agent <agent> --profile <profile> --native-id <id>",
+        ) from exc
     if not isinstance(value, dict) or value.get("session_id") != session_id:
         raise GovernanceError("governance.session_invalid", "Session record does not match the requested session.")
     if lifecycle and value.get("parent_session_id") is not None:
@@ -163,13 +169,60 @@ def load_proposal(root: Path, proposal_id: str) -> Proposal:
     return _proposal_from_payload(payload)
 
 
+_SURROGATE_PAIR_ESCAPE = re.compile(
+    r"\\u([dD][89aAbB][0-9a-fA-F]{2})\\u([dD][c-fC-F][0-9a-fA-F]{2})"
+)
+
+
+def _combine_surrogate_pair(match: re.Match[str]) -> str:
+    high = int(match.group(1), 16)
+    low = int(match.group(2), 16)
+    return chr(0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00))
+
+
+def _decode_surrogate_escapes(text: str) -> str:
+    """Fold JSON-style surrogate-pair escapes into the real character.
+
+    Proposal files written with json ensure_ascii=True carry emoji as
+    adjacent \\uXXXX escapes. Left alone, YAML decodes them into lone
+    surrogates that later fail with "surrogates not allowed".
+    """
+    return _SURROGATE_PAIR_ESCAPE.sub(_combine_surrogate_pair, text)
+
+
+def _repair_surrogates(value: Any) -> Any:
+    """Combine lone surrogates already materialized in parsed strings."""
+    if isinstance(value, str):
+        try:
+            return value.encode("utf-16", "surrogatepass").decode("utf-16")
+        except (UnicodeError, ValueError):
+            return value
+    if isinstance(value, dict):
+        return {_repair_surrogates(key): _repair_surrogates(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_repair_surrogates(item) for item in value]
+    return value
+
+
 def capture_proposal(root: Path, *, target: str, proposal_file: Path, session_id: str) -> Proposal:
     _session(root, session_id)
     target_path = _safe_target(root, target)
     try:
-        source = yaml.safe_load(proposal_file.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError) as exc:
-        raise GovernanceError("governance.proposal_invalid", "Proposal input is not valid YAML.") from exc
+        raw = proposal_file.read_bytes().decode("utf-8")
+    except OSError as exc:
+        raise GovernanceError(
+            "governance.proposal_invalid",
+            f"Proposal input is not readable: {exc}",
+        ) from exc
+    try:
+        source = yaml.safe_load(_decode_surrogate_escapes(raw))
+    except yaml.YAMLError as exc:
+        detail = " ".join(str(exc).split())
+        message = "Proposal input is not valid YAML."
+        if detail:
+            message += f" {detail}"
+        raise GovernanceError("governance.proposal_invalid", message) from exc
+    source = _repair_surrogates(source)
     if not isinstance(source, dict):
         raise GovernanceError("governance.proposal_invalid", "Proposal input must be a mapping.")
     required = ("summary", "evidence", "source_paths", "confidence", "known_gaps", "suggested_freshness", "conflicts", "result_content")

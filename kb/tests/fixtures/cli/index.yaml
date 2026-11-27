@@ -13,7 +13,7 @@ cases:
     argv: ["index", "--kb", "${TMP}/missing"]
     exit_code: 3
     stdout: ""
-    stderr: "error[invalid_kb_root]: indexed with 1 validation error(s)\n"
+    stderr: "error[invalid_kb_root]: indexed with 1 validation error(s) [${TMP}/missing]\n"
   recovery:
     recovery: not_applicable
   output_shape:

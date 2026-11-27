@@ -13,7 +13,7 @@ cases:
     argv: ["validate", "--kb", "${TMP}/missing", "--strict"]
     exit_code: 3
     stdout: ""
-    stderr: "error[index_missing]: validation failed with 2 error(s)\n"
+    stderr: "error[index_missing]: validation failed with 2 error(s) [manifest.json]\n"
   recovery:
     recovery: not_applicable
   output_shape:
