@@ -49,6 +49,14 @@ cat >"$stubbin/ssh" <<'STUB'
 for arg in "$@"; do
   [[ "$arg" == *"curl"* ]] && exit 0
 done
+# Remote activity probe (colab-stop): answer from state files so tests drive
+# GPU/process presence. Defaults are idle (no GPU use, no processes).
+if [[ " $* " == *"nvidia-smi"* ]]; then
+  cat "$STUB_STATE/gpu-util" 2>/dev/null || printf '0\n'
+  printf 'EOS-PROCS\n'
+  cat "$STUB_STATE/procs" 2>/dev/null || true
+  exit 0
+fi
 if [[ " $* " == *" -N "* && " $* " == *" -L "* ]]; then
   bash -c "exec -a \"FAKE-COLAB-FWD ssh ${STUB_FWD_SPEC:?}\" sleep 120" >/dev/null 2>&1 &
   disown 2>/dev/null || true
@@ -238,5 +246,36 @@ chmod +x "$tmp/delegate/colab"
 out="$(timeout 15 env PATH="$tmp/filelink:$tmp/delegate:/usr/bin:/bin" HOME="$tmp/home" EOS_ROOT="$ROOT" "$tmp/filelink/colab" version 2>&1)" \
   || fail "shim file-symlink hang or failure (rc $?)"
 [[ "$out" == "FILELINK-DELEGATE" ]] || fail "file-symlink self not skipped: $out"
+
+# 13. idle stop defers on remote GPU/process activity, not just busy kernels.
+printf '%s' "$token" >"$tmp/stub-token"
+printf 'STATE_TOKEN=%s\nSTATE_PID=99999999\n' "$token" >"$EOS_STATE_DIR/colab/forward.env"
+# 13a. hot GPU keeps the session: state kept, runtime untouched.
+printf '47\n' >"$STUB_STATE/gpu-util"
+: >"$STUB_STATE/procs"
+calls_before="$(wc -l <"$STUB_STATE/calls" 2>/dev/null || echo 0)"
+stop_out="$(EOS_ROOT="$ROOT" "$ROOT/scripts/colab-stop" 2>&1)"
+[[ "$stop_out" == *"leaving the session running"* ]] || fail "hot GPU did not defer stop: $stop_out"
+[[ -f "$EOS_STATE_DIR/colab/forward.env" ]] || fail "state removed despite GPU activity"
+[[ "$(wc -l <"$STUB_STATE/calls" 2>/dev/null || echo 0)" == "$calls_before" ]] || fail "runtime touched despite GPU activity"
+# 13b. training process with idle GPU also defers.
+printf '0\n' >"$STUB_STATE/gpu-util"
+printf '4242 python train.py --epochs 50\n' >"$STUB_STATE/procs"
+calls_before="$(wc -l <"$STUB_STATE/calls" 2>/dev/null || echo 0)"
+stop_out="$(EOS_ROOT="$ROOT" "$ROOT/scripts/colab-stop" 2>&1)"
+[[ "$stop_out" == *"leaving the session running"* ]] || fail "training proc did not defer stop: $stop_out"
+[[ -f "$EOS_STATE_DIR/colab/forward.env" ]] || fail "state removed despite training process"
+[[ "$(wc -l <"$STUB_STATE/calls" 2>/dev/null || echo 0)" == "$calls_before" ]] || fail "runtime touched despite training process"
+# 13c. confirmed idle proceeds: state removed, no runtime stop (not created).
+: >"$STUB_STATE/procs"
+stop_out="$(EOS_ROOT="$ROOT" "$ROOT/scripts/colab-stop" 2>&1)"
+[[ -f "$EOS_STATE_DIR/colab/forward.env" ]] && fail "state kept on confirmed idle" || true
+[[ "$stop_out" != *"leaving the session running"* ]] || fail "idle wrongly deferred: $stop_out"
+# 13d. unreachable VM keeps the session (unknown is not idle).
+printf 'STATE_TOKEN=%s\nSTATE_PID=99999999\n' "$token" >"$EOS_STATE_DIR/colab/forward.env"
+stop_out="$(EOS_SSH_BIN=/bin/false EOS_ROOT="$ROOT" "$ROOT/scripts/colab-stop" 2>&1)"
+[[ "$stop_out" == *"keeping the session"* ]] || fail "ssh failure did not keep session: $stop_out"
+[[ -f "$EOS_STATE_DIR/colab/forward.env" ]] || fail "state removed on unreachable VM"
+rm -f "$EOS_STATE_DIR/colab/forward.env"
 
 echo "colab scripts ok"

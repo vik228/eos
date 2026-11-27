@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Stop the local Colab port forward. Stops the runtime too when this machine
 # created it (state file) or when --rm is passed. Never touches a kernel that
-# reports busy: a training job outlives the stop request.
+# reports busy or a VM with live GPU/process activity: a training job
+# outlives the stop request.
 set -euo pipefail
 
 ROOT="${EOS_ROOT:-$HOME/personal/eos}"
@@ -52,6 +53,48 @@ kernel_busy() {
   [[ "$(kernel_state "$1")" == "busy" ]]
 }
 
+# First SSH identity candidate, mirroring colab-connect. Empty when the
+# machine never ran setup-colab, in which case no remote probe is possible.
+colab_key() {
+  if [[ -n "${EOS_COLAB_IDENTITY:-}" && -f "$EOS_COLAB_IDENTITY" ]]; then
+    printf '%s\n' "$EOS_COLAB_IDENTITY"
+    return 0
+  fi
+  local candidate
+  for candidate in "$HOME/.ssh/id_ed25519" "$HOME/.ssh/id_ecdsa" "$HOME/.ssh/eos_colab_ed25519"; do
+    if [[ -f "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Prints active|idle|unknown|skip for headless work on the VM. active means
+# remote GPU use above threshold or a training launcher is alive, so a
+# nohup-style run outlives the idle stop just like a busy kernel does.
+# unknown (ssh failed, no nvidia-smi and no process match inconclusive)
+# must never read as idle. skip means no SSH identity exists, so no probe
+# is possible and the caller falls back to the kernel verdict.
+remote_activity() {
+  local identity probe out
+  identity="$(colab_key)" || { printf 'skip'; return 0; }
+  # Bracketed initials keep pgrep from matching the probing shell itself.
+  probe='nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null; echo EOS-PROCS; pgrep -af "[t]orchrun|[d]eepspeed|[a]ccelerate launch|train\.py|training\.py" 2>/dev/null; true'
+  out="$("${EOS_SSH_BIN:-ssh}" -o "ProxyCommand ${EOS_COLAB_BIN:-$ROOT/scripts/colab} ssh --proxy-mode -s $SESSION -i $identity" \
+    -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    -o IdentitiesOnly=yes -i "$identity" \
+    -o BatchMode=yes -o ConnectTimeout=10 "root@colab-session" "$probe" 2>/dev/null)" || { printf 'unknown'; return 0; }
+  [[ -n "$out" ]] || { printf 'unknown'; return 0; }
+  local line max_util=0 procs=0
+  while IFS= read -r line; do
+    if [[ "$line" == "EOS-PROCS" ]]; then procs=1; continue; fi
+    if [[ "$procs" == 0 && "$line" =~ ^[0-9]+$ && "$line" -gt "$max_util" ]]; then max_util="$line"; fi
+    if [[ "$procs" == 1 && -n "$line" ]]; then printf 'active'; return 0; fi
+  done <<<"$out"
+  if [[ "$max_util" -gt 5 ]]; then printf 'active'; else printf 'idle'; fi
+}
+
 created=0
 token=""
 if [[ -f "$STATE" ]]; then
@@ -61,6 +104,18 @@ if [[ -f "$STATE" ]]; then
   case "$(kernel_state "$token")" in
     busy)
       echo "colab-stop: kernel is busy, leaving the session running" >&2
+      exit 0
+      ;;
+    unknown)
+      echo "colab-stop: link unclear, keeping the session (state kept)" >&2
+      exit 0
+      ;;
+  esac
+  # Kernel idle is not enough: a nohup trainer leaves the kernel idle
+  # while the GPU stays hot. Stop only on confirmed remote idle.
+  case "$(remote_activity)" in
+    active)
+      echo "colab-stop: remote GPU/process activity, leaving the session running" >&2
       exit 0
       ;;
     unknown)
