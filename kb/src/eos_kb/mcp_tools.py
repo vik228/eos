@@ -14,6 +14,15 @@ import yaml
 from .brief import generate_brief
 from .digest import generate_digest
 from .jev_retrieval import jev_context
+from .remote_agents import (
+    RemoteAgentError,
+    followup_remote_agent,
+    list_remote_agents,
+    logs_remote_agent,
+    start_remote_agent,
+    status_remote_agent,
+    stop_remote_agent,
+)
 from .retrieval import RetrievalValidationError, context as kb_context_fn, search as kb_search_fn
 
 ALLOWED_LOG_KINDS = frozenset({"thought", "meeting", "chat-summary", "decision"})
@@ -420,6 +429,97 @@ def tool_kb_brief(
     return {"text": brief.render_markdown().strip(), "brief": brief.as_dict()}
 
 
+def tool_agent_start(
+    kb_root: Path,
+    profile: str,
+    *,
+    name: str,
+    prompt: str,
+    cwd: str,
+    agent: str = "claude",
+    permission_mode: str | None = None,
+) -> dict[str, Any]:
+    try:
+        meta = start_remote_agent(
+            profile,
+            name=name,
+            prompt=prompt,
+            cwd=cwd,
+            agent=agent,
+            permission_mode=permission_mode,
+        )
+    except RemoteAgentError as exc:
+        raise McpToolError(str(exc)) from exc
+    text = (
+        f"Started {meta['agent']} session **{meta['name']}** (`{meta['run_id']}`)\n"
+        f"- Profile: `{profile}` | CWD: `{meta['cwd']}`\n"
+        f"- Session ID: `{meta['session_id']}`\n"
+        f"- Resume locally later: `{meta['resume_command']}`\n"
+        f"Use `agent_status` or `agent_logs` with `run_id='{meta['run_id']}'` to monitor progress."
+    )
+    return {"text": text, "run": meta}
+
+
+def tool_agent_list(kb_root: Path, profile: str, *, limit: int = 10) -> dict[str, Any]:
+    runs = list_remote_agents(profile, limit=limit)
+    if not runs:
+        return {"text": f"No remote agent sessions found for profile '{profile}'.", "runs": []}
+    lines = [f"Remote agent sessions ({profile}):"]
+    for r in runs:
+        lines.append(
+            f"- `{r['run_id']}` [{r['status']}] **{r['name']}** ({r['agent']} @ `{r['cwd']}`, started {r['started_at']})"
+        )
+    return {"text": "\n".join(lines), "runs": runs}
+
+
+def tool_agent_status(kb_root: Path, profile: str, *, run_id: str) -> dict[str, Any]:
+    try:
+        st = status_remote_agent(profile, run_id=run_id)
+    except RemoteAgentError as exc:
+        raise McpToolError(str(exc)) from exc
+    lines = [
+        f"**{st['name']}** (`{st['run_id']}`)",
+        f"- Status: **{st['status']}** | Agent: `{st['agent']}` | Turns: {st.get('turns', 1)}",
+        f"- CWD: `{st['cwd']}` | Started: {st['started_at']}",
+        f"- Resume locally: `{st['resume_command']}`",
+    ]
+    if st.get("final_result"):
+        lines.extend(["", "Final Result:", st["final_result"][:3000]])
+    elif st.get("recent_events"):
+        lines.extend(["", "Recent Activity:"] + [f"- {e}" for e in st["recent_events"][-8:]])
+    return {"text": "\n".join(lines), "status": st}
+
+
+def tool_agent_logs(kb_root: Path, profile: str, *, run_id: str, tail_lines: int = 40) -> dict[str, Any]:
+    try:
+        res = logs_remote_agent(profile, run_id=run_id, tail_lines=tail_lines)
+    except RemoteAgentError as exc:
+        raise McpToolError(str(exc)) from exc
+    return {
+        "text": f"Logs for **{res['name']}** (`{run_id}` | {res['status']}):\n\n{res['text']}",
+        "logs": res,
+    }
+
+
+def tool_agent_followup(kb_root: Path, profile: str, *, run_id: str, prompt: str) -> dict[str, Any]:
+    try:
+        meta = followup_remote_agent(profile, run_id=run_id, prompt=prompt)
+    except RemoteAgentError as exc:
+        raise McpToolError(str(exc)) from exc
+    return {
+        "text": f"Resumed **{meta['name']}** (`{run_id}`, turn {meta['turns']}). Monitor with `agent_status`.",
+        "run": meta,
+    }
+
+
+def tool_agent_stop(kb_root: Path, profile: str, *, run_id: str) -> dict[str, Any]:
+    try:
+        meta = stop_remote_agent(profile, run_id=run_id)
+    except RemoteAgentError as exc:
+        raise McpToolError(str(exc)) from exc
+    return {"text": f"Stopped **{meta['name']}** (`{run_id}`).", "run": meta}
+
+
 TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "name": "kb_context",
@@ -549,6 +649,86 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "name": "agent_start",
+        "description": (
+            "Launch a real, named coding agent session on the host machine under the active EOS profile "
+            "(work: claude only; personal: claude, codex, gemini, opencode). "
+            "Claude sessions persist with the given display name so you can resume them locally later."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Human-readable session name (shown in Claude /resume)."},
+                "prompt": {"type": "string", "description": "Task or debugging prompt for the coding agent."},
+                "cwd": {"type": "string", "description": "Workspace directory (relative to profile root or absolute path inside it)."},
+                "agent": {
+                    "type": "string",
+                    "enum": ["claude", "codex", "gemini", "opencode"],
+                    "description": "Agent to launch (default: claude; work profile allows claude only).",
+                    "default": "claude",
+                },
+                "permission_mode": {"type": "string", "description": "Optional Claude permission mode override (e.g. plan, auto)."},
+            },
+            "required": ["name", "prompt", "cwd"],
+        },
+    },
+    {
+        "name": "agent_list",
+        "description": "List recent remote coding agent sessions and their live states for this profile.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "Max sessions to return (default 10).", "default": 10},
+            },
+        },
+    },
+    {
+        "name": "agent_status",
+        "description": "Check live status, recent tool activity, final result, and local resume command for a remote agent session.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string", "description": "Run ID returned by agent_start or agent_list."},
+            },
+            "required": ["run_id"],
+        },
+    },
+    {
+        "name": "agent_logs",
+        "description": "Read formatted recent progress logs from a remote coding agent session.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string", "description": "Run ID of the session."},
+                "tail_lines": {"type": "integer", "description": "Number of recent events/lines (default 40).", "default": 40},
+            },
+            "required": ["run_id"],
+        },
+    },
+    {
+        "name": "agent_followup",
+        "description": "Send a follow-up prompt to resume a completed remote Claude Code session under the same session ID and name.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string", "description": "Run ID of the Claude Code session."},
+                "prompt": {"type": "string", "description": "Follow-up instruction."},
+            },
+            "required": ["run_id", "prompt"],
+        },
+    },
+    {
+        "name": "agent_stop",
+        "description": "Stop a currently running remote coding agent session.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string", "description": "Run ID of the session to stop."},
+            },
+            "required": ["run_id"],
+        },
+    },
 ]
 
 
@@ -619,4 +799,34 @@ def dispatch_tool(kb_root: Path, profile: str, name: str, arguments: dict[str, A
             budget=int(args.get("budget", 2000)),
             as_of=args.get("as_of"),
         )
+    if name == "agent_start":
+        return tool_agent_start(
+            kb_root,
+            profile,
+            name=str(args.get("name") or ""),
+            prompt=str(args.get("prompt") or ""),
+            cwd=str(args.get("cwd") or ""),
+            agent=str(args.get("agent") or "claude"),
+            permission_mode=args.get("permission_mode"),
+        )
+    if name == "agent_list":
+        return tool_agent_list(kb_root, profile, limit=int(args.get("limit", 10)))
+    if name == "agent_status":
+        return tool_agent_status(kb_root, profile, run_id=str(args.get("run_id") or ""))
+    if name == "agent_logs":
+        return tool_agent_logs(
+            kb_root,
+            profile,
+            run_id=str(args.get("run_id") or ""),
+            tail_lines=int(args.get("tail_lines", 40)),
+        )
+    if name == "agent_followup":
+        return tool_agent_followup(
+            kb_root,
+            profile,
+            run_id=str(args.get("run_id") or ""),
+            prompt=str(args.get("prompt") or ""),
+        )
+    if name == "agent_stop":
+        return tool_agent_stop(kb_root, profile, run_id=str(args.get("run_id") or ""))
     raise McpToolError(f"Unknown tool: {name}")
