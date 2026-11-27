@@ -42,7 +42,7 @@ def test_index_stores_concepts_headings_links_reverse_edges_and_fts(bundle: Path
     assert report.errors == []
     assert report.database_path.parent == state_directory(bundle)
     names = {path.name for path in (bundle / ".eos").iterdir()} - {"writer.lock"}
-    assert names == {"freshness-gate.json", "state.md"}
+    assert names == {"freshness-gate.json", "reviews.jsonl", "approvals.jsonl", "state.md"}
     connection = report.connection
     assert connection.execute("SELECT count(*) FROM concepts").fetchone()[0] == 2
     assert connection.execute("SELECT title FROM headings").fetchone()[0] == "Intro"
@@ -726,3 +726,45 @@ def test_validate_fails_closed_on_unusable_gate(bundle: Path, state: str, code: 
     assert (code, "freshness-gate.json") in codes
     # Read-only: a second validate sees the same failure, never a fresh gate.
     assert validate_bundle(bundle).errors == report.errors
+
+
+def test_index_refuses_corrupt_gate_without_reactivating(bundle: Path) -> None:
+    index_bundle(bundle)
+    gate_path = bundle / ".eos" / "freshness-gate.json"
+    gate_before = gate_path.read_bytes()
+    gate_path.write_text("{truncated", encoding="utf-8")
+
+    report = index_bundle(bundle)
+
+    assert ("gate.corrupt", "freshness-gate.json") in _contract_codes(report)
+    # Refuse means refuse: the corrupt record is left untouched, never
+    # silently replaced with a fresh snapshot.
+    assert gate_path.read_bytes() == b"{truncated"
+    assert gate_path.read_bytes() != gate_before
+
+
+def test_gate_snapshot_predates_index_build(bundle: Path) -> None:
+    # prepare_gate_activation snapshots the pre-index tree; a doc added after
+    # the snapshot but committed with it still counts as new.
+    from eos_kb.gate import commit_gate_activation, load_gate, prepare_gate_activation
+
+    assert load_gate(bundle) is None
+    pending = prepare_gate_activation(bundle)
+    assert pending is not None
+    write_concept(bundle, "areas/late.md", resource="kb:late", title="Late", body="late")
+    committed = commit_gate_activation(bundle, pending)
+
+    assert "areas/late.md" not in committed["docs"]
+    report = validate_bundle(bundle)
+    assert ("freshness.contract_required", "areas/late.md") in _contract_codes(report)
+
+
+def test_prepare_gate_refuses_corrupt_record(bundle: Path) -> None:
+    from eos_kb.gate import GateError, prepare_gate_activation
+
+    index_bundle(bundle)
+    (bundle / ".eos" / "freshness-gate.json").write_text("{truncated", encoding="utf-8")
+
+    with pytest.raises(GateError) as raised:
+        prepare_gate_activation(bundle)
+    assert raised.value.code == "gate.corrupt"

@@ -328,8 +328,9 @@ def test_direct_change_approval_writes_no_review_event(tmp_path: Path) -> None:
     target.write_text(text, encoding="utf-8")
     index_bundle(root)
     review_direct_change(root, "concept.md", actor="Vikas", session_id="parent")
-    # Self-approval records the acceptance but must not move expiry.
-    assert not (root / ".eos" / "reviews.jsonl").exists()
+    # Self-approval records the acceptance but writes no review event, so it
+    # must not move expiry. The ledger file exists (empty) from activation.
+    assert (root / ".eos" / "reviews.jsonl").read_text(encoding="utf-8") == ""
     approvals = [
         json.loads(line)
         for line in (root / ".eos" / "approvals.jsonl").read_text(encoding="utf-8").splitlines()
@@ -458,3 +459,42 @@ def test_promote_with_corrupt_gate_fails_closed(tmp_path: Path) -> None:
     with pytest.raises(GovernanceError) as raised:
         promote_proposal(root, proposal.proposal_id, session_id="parent", source_root=source_root)
     assert raised.value.code == "gate.corrupt"
+
+
+def test_promote_refuses_untagged_new_doc_elsewhere_in_bundle(tmp_path: Path) -> None:
+    # The new-doc rule is enforced KB-wide on the shadow bundle, not just on
+    # the candidate: an untagged new doc anywhere in it fails the promote,
+    # so promotion cannot launder it into the stored index.
+    root = tmp_path / "knowledge"
+    (root / "projects" / "demo").mkdir(parents=True)
+    _session(root, "parent")
+    target = root / "projects" / "demo" / "router.md"
+    target.write_text(
+        "---\ntype: Decision\ntitle: Router\nresource: kb:demo/router\nfreshness: tracked\nreview_every: 30d\n---\nRouter. [sibling](sibling.md)\n",
+        encoding="utf-8",
+    )
+    (root / "projects" / "demo" / "sibling.md").write_text(
+        "---\ntype: Decision\ntitle: Sibling\nresource: kb:demo/sibling\nfreshness: historical\n---\nSibling. [router](router.md)\n",
+        encoding="utf-8",
+    )
+    index_bundle(root)
+    (root / "projects" / "demo" / "untagged.md").write_text(
+        "---\ntype: Decision\ntitle: Untagged\nresource: kb:demo/untagged\n---\nNew doc, never tagged. [router](router.md)\n",
+        encoding="utf-8",
+    )
+    proposal_file = tmp_path / "proposal.yaml"
+    result = (
+        "---\ntype: Decision\ntitle: Router\nresource: kb:demo/router\n"
+        "freshness: tracked\nreview_every: 30d\n---\nRouter updated. [untagged](untagged.md) [sibling](sibling.md)\n"
+    )
+    _proposal_input(proposal_file, result)
+    proposal = capture_proposal(root, target="projects/demo/router.md", proposal_file=proposal_file, session_id="parent")
+    review_proposal(root, proposal.proposal_id, actor="Vikas", session_id="parent", decision="accepted")
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    with pytest.raises(GovernanceError) as raised:
+        promote_proposal(root, proposal.proposal_id, session_id="parent", source_root=source_root)
+    assert raised.value.code == "governance.result_invalid"
+    assert "freshness.contract_required" in raised.value.message
+    assert "untagged.md" in raised.value.message
+    assert load_proposal(root, proposal.proposal_id).state is ProposalState.ACCEPTED

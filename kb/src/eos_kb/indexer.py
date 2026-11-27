@@ -15,7 +15,7 @@ from typing import Iterable, Protocol
 from urllib.parse import urlsplit
 
 from .frontmatter import parse_concept
-from .gate import GateError, ensure_gate_activation, is_new_doc, require_gate
+from .gate import GateError, commit_gate_activation, is_new_doc, prepare_gate_activation, require_gate
 from .model import Concept, Status
 from .schema import SchemaValidationError
 from .storage import (
@@ -136,6 +136,18 @@ def freshness_contract_errors(
                 )
             )
     return errors
+
+
+def shadow_contract_errors(shadow: Path, gate: dict | None) -> list[IndexError]:
+    """Freshness contract over a promotion shadow tree, candidate included.
+
+    A promote must enforce the new-doc rule KB-wide, not just on the
+    candidate: an untagged new doc anywhere in the bundle fails the promote,
+    since promoting would otherwise launder it into the stored index.
+    Discovery errors are reported separately by the shadow index build.
+    """
+    concepts, _ = _discover(shadow)
+    return freshness_contract_errors(concepts, gate)
 
 
 def _metadata_hash(concept: Concept) -> str:
@@ -870,6 +882,21 @@ def index_bundle(
     manifest_path = state / "manifest.json"
     recovery = state / "transaction.json"
 
+    # Snapshot the gate boundary before anything is read or written: the
+    # activation must describe the pre-index tree, so a doc added mid-build
+    # is absent from the snapshot and counts as new instead of silently
+    # slipping into "existing". A corrupt gate file refuses the whole index
+    # instead of re-activating and moving the boundary. Shadow copies (state
+    # in a temp dir) opt out: the boundary belongs to the live KB.
+    pending_gate: dict | None = None
+    if activate_gate:
+        try:
+            pending_gate = prepare_gate_activation(root)
+        except GateError as exc:
+            return _current_report(
+                database, manifest_path, [IndexError(exc.code, "freshness-gate.json", str(exc))]
+            )
+
     if recovery.exists():
         with writer_lock(state):
             recovery_concepts, _ = _discover(root)
@@ -958,12 +985,12 @@ def index_bundle(
                 allowed_destinations=allowed_destinations,
             )
             raise
-    # Activating the gate here snapshots the pre-existing docs the first time
-    # a write-path command runs after the upgrade, so later docs are reliably
-    # new. Never updated afterwards. Promote shadow copies opt out: the
-    # boundary belongs to the live KB, not a temp dir.
-    if activate_gate:
-        ensure_gate_activation(root)
+    # Commit the pre-build snapshot: the boundary describes the tree the
+    # index was built from. Committing here (after the build, outside the
+    # state lock) keeps the state->.eos lock order one-directional, and the
+    # commit is a no-op when another run activated first.
+    if activate_gate and pending_gate is not None:
+        commit_gate_activation(root, pending_gate)
     return IndexReport(database, manifest, [], sqlite3.connect(database))
 
 

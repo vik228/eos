@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import posixpath
 import sqlite3
 import uuid
 from datetime import datetime, timezone
@@ -165,6 +166,23 @@ def checkpoint_session(root: Path, session_id: str, *, changed_paths: list[str] 
     return record
 
 
+def normalize_used_resource(value: object) -> str:
+    """Normalize a used-resource entry the same way as target paths.
+
+    Leading ./ segments and redundant separators are stripped so "./old.md"
+    matches the "old.md" card; absolute paths and parent-directory escapes
+    are rejected instead of stored.
+    """
+    text = str(value) if value is not None else ""
+    if not text:
+        raise SessionError(f"used resource is empty: {value!r}")
+    normalized = posixpath.normpath(text)
+    candidate = PurePosixPath(normalized)
+    if candidate.is_absolute() or ".." in candidate.parts:
+        raise SessionError(f"used resource escapes the knowledge bundle: {value!r}")
+    return normalized
+
+
 def _sanitized_reads(resources: Iterable[object]) -> list[str]:
     """Keep card resources and repo-relative paths; reject escapes.
 
@@ -172,16 +190,7 @@ def _sanitized_reads(resources: Iterable[object]) -> list[str]:
     record: a --used-resource value is matched against KB-relative paths and
     card resources only.
     """
-    cleaned: list[str] = []
-    for item in resources:
-        value = str(item) if item is not None else ""
-        if not value:
-            raise SessionError(f"used resource is empty: {value!r}")
-        candidate = PurePosixPath(value)
-        if candidate.is_absolute() or ".." in candidate.parts:
-            raise SessionError(f"used resource escapes the knowledge bundle: {value!r}")
-        cleaned.append(value)
-    return sorted(set(cleaned))
+    return sorted({normalize_used_resource(item) for item in resources})
 
 
 def record_session_reads(root: Path, session_id: str, resources: list[str]) -> dict[str, Any]:
@@ -259,9 +268,11 @@ def session_used_resources(root: Path, session_id: str | None) -> set[str]:
 
     Retrieval (search/context/show) lands in both the usage log and the
     session record, so the gate works with the usage log disabled. Related
-    suggestions deliberately do not count as used. Direct file reads land in
-    the session record via record_session_reads (repo-relative paths are
-    resolved to the card resources the freshness report names).
+    suggestions deliberately do not count as used, including entries kept
+    from before that exclusion: only search, context, and show entries are
+    read back. Direct file reads land in the session record via
+    record_session_reads (repo-relative paths are resolved to the card
+    resources the freshness report names).
     """
     if not session_id:
         return set()
@@ -272,6 +283,8 @@ def session_used_resources(root: Path, session_id: str | None) -> set[str]:
         entries = []
     for entry in entries:
         if not isinstance(entry, dict) or entry.get("session_id") != session_id:
+            continue
+        if entry.get("command") not in ("search", "context", "show"):
             continue
         cards = entry.get("cards")
         if isinstance(cards, list):

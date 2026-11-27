@@ -11,8 +11,9 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 from urllib.parse import unquote, urlparse
 
-from .gate import GateError, activation_review_at, latest_review_event, require_gate
+from .gate import GateError, gate_activation_at, latest_review_event, require_gate
 from .indexer import parse_review_window, valid_manifest
+from .normalize import normalized_content_hash
 from .storage import SCHEMA_VERSION, atomic_write, state_directory, writer_lock
 
 
@@ -37,6 +38,20 @@ class FreshnessValidationError(ValueError):
         self.code = code
         self.field_path = field_path
         super().__init__(message)
+
+
+def _disk_content_hash(root: Path, relative_file: str) -> str | None:
+    """Hash the file as it stands on disk right now.
+
+    The index is only rebuilt on promote, so an edit without reindex leaves
+    a stale manifest hash behind. Tracked docs are rehashed from disk so a
+    hash mismatch counts as edited-since-review instead of silently matching
+    the old indexed hash.
+    """
+    try:
+        return normalized_content_hash((root / relative_file).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError):
+        return None
 
 
 @dataclass(frozen=True)
@@ -329,7 +344,9 @@ def load_freshness(root: Path) -> FreshnessReport:
     return report
 
 
-def freshness_overlays(root: Path) -> dict[str, FreshnessOverlay]:
+def freshness_overlays(
+    root: Path, *, historical: frozenset[str] = frozenset()
+) -> dict[str, FreshnessOverlay]:
     report = load_freshness(root)
     states: dict[str, list[str]] = {}
     warnings: dict[str, set[str]] = {}
@@ -384,6 +401,11 @@ def freshness_overlays(root: Path) -> dict[str, FreshnessOverlay]:
 
     overlays: dict[str, FreshnessOverlay] = {}
     for resource, values in states.items():
+        # Historical docs are dated records: unknown evidence stays advisory
+        # (visible in warnings) and never drags the overlay to unknown.
+        # Drifted, stale, and pending evidence still blocks KB-wide.
+        if resource in historical:
+            values = [value for value in values if value != "unknown"]
         if any(value in {"drifted", "stale", "pending"} for value in values):
             state = "stale"
         elif "unknown" in values:
@@ -481,11 +503,6 @@ def audit_freshness(
         gate = require_gate(root)
     except GateError as exc:
         raise FreshnessValidationError(exc.code, "$.freshness", str(exc)) from exc
-    content_hashes = {
-        item.get("path"): item.get("content_hash")
-        for item in manifest["concepts"]
-        if isinstance(item, dict)
-    }
     concept_by_resource: dict[str, sqlite3.Row] = {
         (row["resource"] or row["relative_file"]): row for row in concepts
     }
@@ -593,16 +610,29 @@ def audit_freshness(
         # since review: expiry survives the edit and reports stale until
         # re-review, never silently unknown. Docs already tracked at gate
         # activation fall back to the activation timestamp while their
-        # content is unchanged since the snapshot; a doc with no review at
-        # all stays unknown via the concept fallback below.
-        current_hash = content_hashes.get(row["relative_file"])
-        latest = latest_review_event(root, row["relative_file"], now=generated)
+        # content is unchanged since the snapshot. A doc edited since
+        # activation with no later review is likewise stale: the edit
+        # cannot lift expiry. Only a doc with no review at all stays
+        # unknown via the concept fallback below.
+        current_hash = _disk_content_hash(root, row["relative_file"])
+        try:
+            latest = latest_review_event(root, row["relative_file"], now=generated)
+        except GateError as exc:
+            raise FreshnessValidationError(exc.code, "$.freshness", str(exc)) from exc
         if latest is None:
-            initial = activation_review_at(gate, row["relative_file"], current_hash)
-            if initial is None:
+            snapshot_hash = gate.get("docs", {}).get(row["relative_file"])
+            activated_at = gate_activation_at(gate)
+            if snapshot_hash is None or activated_at is None:
+                # New doc with no review yet, or undatable activation: no
+                # computable expiry, unknown via the concept fallback below.
                 continue
-            effective = initial + timedelta(days=window_days)
-            state = "stale" if generated >= effective else "current"
+            effective = activated_at + timedelta(days=window_days)
+            if current_hash == snapshot_hash:
+                state = "stale" if generated >= effective else "current"
+            else:
+                # Edited since activation with no later review: the edit
+                # cannot lift expiry, so the doc reports stale.
+                state = "stale"
         else:
             reviewed_at, reviewed_hash = latest
             effective = reviewed_at + timedelta(days=window_days)

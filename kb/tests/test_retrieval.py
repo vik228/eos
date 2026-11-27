@@ -680,3 +680,82 @@ def test_included_lifecycle_results_receive_deterministic_penalties(retrieval_bu
         "kb:test/a-deprecated",
     ]
     assert cards[0].score > cards[1].score > cards[2].score > cards[3].score > cards[4].score
+
+
+def _linked_review(root: Path, target: str, content_hash: str, reviewed_at: str) -> None:
+    from eos_kb.gate import record_review_event
+
+    approvals = root / ".eos" / "approvals.jsonl"
+    approvals.parent.mkdir(parents=True, exist_ok=True)
+    with approvals.open("a", encoding="utf-8") as stream:
+        stream.write(
+            json.dumps({
+                "schema_version": 1,
+                "proposal_id": "p1",
+                "actor": "test",
+                "timestamp": reviewed_at,
+                "proposal_hash": "sha256:" + "0" * 64,
+                "base_target_hash": content_hash,
+                "proposed_result_hash": content_hash,
+                "decision": "accepted",
+                "session_id": "s",
+            })
+            + "\n"
+        )
+    record_review_event(
+        root, target=target, content_hash=content_hash,
+        proposal_id="p1", session_id="s", reviewed_at=reviewed_at,
+    )
+
+
+def _manifest_hash(root: Path, relative: str) -> str:
+    from eos_kb.storage import state_directory
+
+    manifest = json.loads((state_directory(root) / "manifest.json").read_text(encoding="utf-8"))
+    return next(item["content_hash"] for item in manifest["concepts"] if item["path"] == relative)
+
+
+def test_show_applies_audit_overlay_for_expired_tracked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import datetime, timezone
+
+    from eos_kb.freshness import audit_freshness
+
+    monkeypatch.setenv("EOS_KB_STATE_ROOT", str(tmp_path / "state"))
+    root = tmp_path / "knowledge"
+    _write(
+        root, "router.md", title="Router", body="# Router\nroutertoken",
+        freshness="tracked", review_every="30d",
+    )
+    index_bundle(root)
+    _linked_review(root, "router.md", _manifest_hash(root, "router.md"), "2026-01-01T00:00:00+00:00")
+    audit_freshness(root, tmp_path, now=datetime(2026, 7, 1, tzinfo=timezone.utc))
+
+    card = show(root, "kb:test/router.md")
+
+    assert card.freshness == "stale"
+    assert "time stale" in " ".join(card.warnings)
+    assert search(root, "routertoken")[0].freshness == "stale"
+
+
+def test_show_historical_reports_fresh_with_source_warnings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from eos_kb.freshness import audit_freshness
+
+    monkeypatch.setenv("EOS_KB_STATE_ROOT", str(tmp_path / "state"))
+    root = tmp_path / "knowledge"
+    _write(
+        root, "log.md", title="Log", body="# Log\nlogtoken",
+        type="Log", freshness="historical",
+        sources=["https://example.test/unverified"],
+    )
+    index_bundle(root)
+    audit_freshness(root, tmp_path)
+
+    card = show(root, "kb:test/log.md")
+
+    assert card.freshness == "fresh"
+    assert any("external source unknown" in warning for warning in card.warnings)
+    assert search(root, "logtoken")[0].freshness == "fresh"

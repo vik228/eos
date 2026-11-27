@@ -155,33 +155,79 @@ def _snapshot_docs(root: Path) -> dict[str, str]:
     return docs
 
 
-def ensure_gate_activation(root: Path, *, now: datetime | None = None) -> dict[str, Any]:
-    """Create the activation record on first use; never update it afterwards.
+def prepare_gate_activation(root: Path, *, now: datetime | None = None) -> dict[str, Any] | None:
+    """Snapshot the boundary if none exists; None when already active.
 
-    Everything on disk at activation counts as existing, even if it is
-    untagged. Anything appearing later is new. The record is written once so
-    the boundary cannot drift when the index is rebuilt.
+    The snapshot is taken before the index it describes is built, so a doc
+    added mid-build is absent from the snapshot and counts as new instead
+    of silently slipping into "existing". Raises GateError when the gate
+    file exists but is unreadable or version-skewed: overwriting it would
+    bless every new doc as existing.
     """
-    existing = load_gate(root)
-    if existing is not None:
-        return existing
+    if load_gate(root) is not None:
+        return None
+    if gate_path(root).exists():
+        raise _gate_failure(root)
     supplied = now or datetime.now(timezone.utc)
     if supplied.tzinfo is None:
         supplied = supplied.replace(tzinfo=timezone.utc)
-    record = {
+    return {
         "schema_version": GATE_SCHEMA_VERSION,
         "activated_at": supplied.astimezone(timezone.utc).isoformat(),
         "docs": _snapshot_docs(root),
     }
+
+
+def commit_gate_activation(root: Path, record: dict[str, Any]) -> dict[str, Any]:
+    """Write a prepared snapshot unless a gate appeared meanwhile."""
     eos = _eos(root)
     with writer_lock(eos):
         if load_gate(root) is not None:
+            _backfill_ledgers(root)
             return load_gate(root)  # type: ignore[return-value]
         atomic_write(
             gate_path(root),
             (json.dumps(record, indent=2, sort_keys=True) + "\n").encode("utf-8"),
         )
+        _backfill_ledgers(root)
     return record
+
+
+def ensure_gate_activation(root: Path, *, now: datetime | None = None) -> dict[str, Any]:
+    """Create the activation record on first use; never update it afterwards.
+
+    Everything on disk at activation counts as existing, even if it is
+    untagged. Anything appearing later is new. The record is written once so
+    the boundary cannot drift when the index is rebuilt. A gate file that
+    exists but is unreadable or version-skewed refuses instead of silently
+    re-activating.
+    """
+    pending = prepare_gate_activation(root, now=now)
+    if pending is None:
+        eos = _eos(root)
+        with writer_lock(eos):
+            _backfill_ledgers(root)
+        existing = load_gate(root)
+        assert existing is not None
+        return existing
+    return commit_gate_activation(root, pending)
+
+
+def _backfill_ledgers(root: Path) -> None:
+    """Create empty review/approval ledgers when they are absent.
+
+    Only kb index (an explicit write path) heals missing ledgers, so a doc
+    tree activated before ledgers existed keeps working, while an audit that
+    finds a ledger missing fails closed instead of silently proceeding.
+    Callers must already hold the .eos writer lock.
+    """
+    for filename in (REVIEWS_FILENAME, "approvals.jsonl"):
+        path = root / ".eos" / filename
+        if not path.is_file():
+            try:
+                atomic_write(path, b"")
+            except OSError:
+                pass
 
 
 def is_new_doc(gate: dict[str, Any] | None, relative_file: str) -> bool:
@@ -191,18 +237,9 @@ def is_new_doc(gate: dict[str, Any] | None, relative_file: str) -> bool:
     return relative_file not in gate.get("docs", {})
 
 
-def activation_review_at(
-    gate: dict[str, Any] | None, relative_file: str, content_hash: str | None
-) -> datetime | None:
-    """Initial review for docs already tracked at activation.
-
-    While a tracked doc's content still matches the activation snapshot, the
-    activation timestamp is its first review. Any later edit without a review
-    event leaves it with no computable expiry (unknown, advisory).
-    """
-    if gate is None or not content_hash:
-        return None
-    if gate.get("docs", {}).get(relative_file) != content_hash:
+def gate_activation_at(gate: dict[str, Any] | None) -> datetime | None:
+    """Parsed activation timestamp, or None when the gate is unusable."""
+    if not isinstance(gate, dict):
         return None
     activated = gate.get("activated_at")
     return _parse_time(activated) if isinstance(activated, str) else None
@@ -277,12 +314,25 @@ def _accepted_review_hashes(root: Path) -> set[tuple[str, str]]:
     """(proposal_id, content hash) pairs with an accepted approval.
 
     A review event counts only when it links to one of these, so a forged
-    reviews.jsonl line cannot move expiry on its own.
+    reviews.jsonl line cannot move expiry on its own. A missing or
+    unreadable approvals log fails closed instead of silently allowing
+    every event through (or silently dropping them all).
     """
+    path = root / ".eos" / "approvals.jsonl"
     try:
-        lines = (root / ".eos" / "approvals.jsonl").read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return set()
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError as exc:
+        raise GateError(
+            "approvals.missing",
+            "$.approvals",
+            "Approvals log is missing; run kb index to recreate empty ledgers.",
+        ) from exc
+    except OSError as exc:
+        raise GateError(
+            "approvals.unreadable",
+            "$.approvals",
+            "Approvals log is unreadable; repair .eos/approvals.jsonl.",
+        ) from exc
     linked: set[tuple[str, str]] = set()
     for line in lines:
         if not line.strip():
@@ -347,8 +397,18 @@ def latest_review_event(
     current = current.astimezone(timezone.utc)
     try:
         lines = reviews_path(root).read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return None
+    except FileNotFoundError as exc:
+        raise GateError(
+            "reviews.missing",
+            "$.reviews",
+            "Review ledger is missing; run kb index to recreate empty ledgers.",
+        ) from exc
+    except OSError as exc:
+        raise GateError(
+            "reviews.unreadable",
+            "$.reviews",
+            "Review ledger is unreadable; repair .eos/reviews.jsonl.",
+        ) from exc
     linked = _accepted_review_hashes(root)
     latest: tuple[datetime, str] | None = None
     for line in lines:

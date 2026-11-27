@@ -1068,9 +1068,10 @@ def test_top_level_checkpoint_used_resource_mapping(
     start_session(kb, cwd=workspace, agent="codex", profile="demo", session_id="s-user")
 
     # A repo-relative path maps to the card resource through the index.
+    # Leading ./ segments normalize to the same entry.
     assert main([
         "checkpoint", "--kb", str(kb), "--session", "s-user",
-        "--used-resource", "old.md", "--json",
+        "--used-resource", "./old.md", "--json",
     ]) == ExitCode.BLOCKED_LIFECYCLE
     assert "time stale: kb:demo/old" in json.loads(capsys.readouterr().err)["message"]
     assert session_used_resources(kb, "s-user") == {"old.md", "kb:demo/old"}

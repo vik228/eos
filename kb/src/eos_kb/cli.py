@@ -10,7 +10,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime
 from enum import IntEnum, StrEnum
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any, Final, Iterable, Sequence, TextIO
 
 from .config import InitializationError, RegistryError, WorkspaceRoute, initialize_bundle, resolve_workspace
@@ -20,7 +20,7 @@ from .indexer import index_bundle, validate_bundle
 from .investigations import InvestigationError, block_investigation, complete_investigation, record_evidence, resume_investigation, start_investigation, status_investigation
 from .migration import MigrationError, apply as apply_migration, inventory as migration_inventory, manifest_hash, plan as plan_migration, record_migration_approval, rollback as rollback_migration, verify_plan
 from .retrieval import context as retrieve_context, related as retrieve_related, search as retrieve_search, show as retrieve_show, status as retrieve_status
-from .sessions import SessionError, checkpoint_session, end_session, record_session_reads, recover_sessions, resume_session, session_used_resources, start_session
+from .sessions import SessionError, checkpoint_session, end_session, normalize_used_resource, record_session_reads, recover_sessions, resume_session, session_used_resources, start_session
 from .storage import StorageError, atomic_write
 from .usage_log import record_usage
 
@@ -586,11 +586,14 @@ def _lifecycle_audit(route: WorkspaceRoute, command: str, session_id: str | None
 
 
 def _invalid_used_resource(value: object) -> bool:
-    text = str(value) if value is not None else ""
-    if not text:
+    """Mirror sessions.normalize_used_resource so the CLI rejects (with a
+    validation error, not a lifecycle block) exactly what recording rejects.
+    """
+    try:
+        normalize_used_resource(value)
+    except (SessionError, ValueError):
         return True
-    candidate = PurePosixPath(text)
-    return candidate.is_absolute() or ".." in candidate.parts
+    return False
 
 
 def _session_command(args: argparse.Namespace) -> CommandResult:

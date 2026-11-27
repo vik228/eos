@@ -112,6 +112,17 @@ def _canonical_json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 
 
+def _historical_resources(rows: Iterable[sqlite3.Row]) -> frozenset[str]:
+    """Card resources whose docs opted out of expiry (historical mode).
+
+    The audit reports them fresh unless conflicting evidence exists; the
+    overlay must agree instead of re-deriving unknown from their sources.
+    """
+    return frozenset(
+        row["resource"] or row["relative_file"] for row in rows if row["freshness_mode"] == "historical"
+    )
+
+
 def _db(root: Path) -> sqlite3.Connection:
     path = state_directory(root) / "index.sqlite3"
     if not path.is_file():
@@ -447,7 +458,9 @@ def search(root: Path, query: str, *, project: str | None = None,
             for row in all_rows
         }
         try:
-            overlays = freshness_overlays(root)
+            overlays = freshness_overlays(
+                root, historical=_historical_resources(all_rows)
+            )
         except ValueError:
             overlays = {}
         rows = [
@@ -582,7 +595,21 @@ def show(root: Path, concept: str, *, section: str | None = None) -> ResultCard:
         body = candidate.read_text(encoding="utf-8")
         body = body.split("---", 2)[-1].lstrip("\r\n")
         selected = _extract_section(body, section) if section else body.strip()
-        return _card(row, score=0, reasons=["resolved concept"], excerpt=selected, section=section or "")
+        # Apply the persisted audit overlay like search does, so an expired
+        # tracked doc shows stale (not the index default unknown) and a
+        # historical doc shows fresh with its unknown sources as warnings.
+        try:
+            overlays = freshness_overlays(
+                root, historical=_historical_resources([row])
+            )
+        except ValueError:
+            overlays = {}
+        overlay = overlays.get(row["resource"] or row["relative_file"])
+        return _card(
+            row, score=0, reasons=["resolved concept"], excerpt=selected, section=section or "",
+            freshness_override=overlay.state if overlay else None,
+            extra_warnings=overlay.warnings if overlay else (),
+        )
     finally:
         connection.close()
 

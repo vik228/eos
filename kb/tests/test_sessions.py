@@ -146,3 +146,33 @@ def test_record_session_reads_rejects_path_escapes(state_root: Path) -> None:
     assert load_session(state_root, session["session_id"])["used_resources"] == []
     record = record_session_reads(state_root, session["session_id"], ["notes/ok.md", "kb:demo/a"])
     assert record["used_resources"] == ["kb:demo/a", "notes/ok.md"]
+
+
+def test_record_session_reads_normalizes_repo_relative_paths(state_root: Path) -> None:
+    from eos_kb.sessions import load_session, record_session_reads
+
+    session = start_session(
+        state_root, cwd=state_root, agent="codex", profile="personal", session_id="s1"
+    )
+    record = record_session_reads(state_root, session["session_id"], ["./notes/c.md", "a//b.md"])
+
+    assert record["used_resources"] == ["a/b.md", "notes/c.md"]
+    assert load_session(state_root, session["session_id"])["used_resources"] == ["a/b.md", "notes/c.md"]
+
+
+def test_session_used_resources_ignores_non_read_commands(state_root: Path) -> None:
+    import json
+
+    from eos_kb.sessions import session_used_resources
+    from eos_kb.usage_log import usage_path
+
+    path = usage_path(state_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as stream:
+        # A retained old log entry from kb related: suggestions, never used.
+        stream.write(json.dumps({"ts": "2026-01-01T00:00:00+00:00", "command": "related", "session_id": "s1", "cards": ["kb:demo/suggested"]}) + "\n")
+        # An entry with no command at all: not a read either.
+        stream.write(json.dumps({"ts": "2026-01-01T00:00:00+00:00", "session_id": "s1", "cards": ["kb:demo/mystery"]}) + "\n")
+        stream.write(json.dumps({"ts": "2026-01-01T00:00:00+00:00", "command": "search", "session_id": "s1", "cards": ["kb:demo/read"]}) + "\n")
+
+    assert session_used_resources(state_root, "s1") == {"kb:demo/read"}

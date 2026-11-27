@@ -6,6 +6,7 @@ for script in claude-default codex-default claude-work gemini-eos claude-persona
   [[ -x "$ROOT/scripts/$script" ]] || { echo "missing wrapper $script"; exit 1; }
   bash -n "$ROOT/scripts/$script"
 done
+bash -n "$ROOT/scripts/lib-agent-session.sh"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -71,4 +72,24 @@ grep -Fxq "agent-kb=$personal_kb" "$log"
 [[ "$(grep -c '^session start ' "$log")" == 1 ]]
 grep -q "checkpoint --kb $personal_kb --session eos-test" "$log"
 grep -q '"continue":true' "$tmp/hook-output"
+
+# blocked checkpoint/session-end must surface a nonzero wrapper exit
+cat > "$tmp/bin/kb-blocked" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${SESSION_LOG:?}"
+if [[ "$1 $2" == "session start" ]]; then printf '%s\n' '{"data":{"session_id":"eos-test"}}'; fi
+if [[ "$1 $2" == "session checkpoint" || "$1 $2" == "session end" ]]; then
+  printf '%s\n' '{"command":"session blocked","exit_code":5,"message":"freshness audit blocked lifecycle: time stale","status":"validation_failure"}' >&2
+  exit 5
+fi
+exit 0
+EOF
+chmod +x "$tmp/bin/kb-blocked"
+: > "$log"
+if HOME="$tmp/home" EOS_ROOT="$ROOT" EOS_AGENT_DOCTOR=: EOS_KB_BIN="$tmp/bin/kb-blocked" EOS_AGENT_BIN="$tmp/bin/agent" \
+  EOS_KB_ROOT="$tmp/kb" SESSION_LOG="$log" "$ROOT/scripts/claude-default"; then
+  echo "expected blocked checkpoint to surface a nonzero exit"; exit 1
+fi
+grep -q "session end" "$log"
+
 echo "agent sessions ok"

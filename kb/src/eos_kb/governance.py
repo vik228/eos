@@ -19,7 +19,7 @@ from .model import ProposalState
 from .normalize import normalized_content_hash
 from .frontmatter import parse_concept, parse_concept_text
 from .gate import GateError, format_review_event, require_gate, reviews_path
-from .indexer import CoverageContract, freshness_contract_errors, index_bundle, valid_manifest
+from .indexer import CoverageContract, index_bundle, shadow_contract_errors, valid_manifest
 from .storage import (
     begin_transaction,
     state_directory,
@@ -388,9 +388,10 @@ def _promotion_files(
             # The freshness contract is enforced against the durable gate
             # record, not the stored index: the index is rebuilt by this very
             # promotion, so only the activation snapshot can tell new docs
-            # from existing ones. Without a boundary record nothing is new.
-            candidate = parse_concept_text(proposal.result_content, normalized)
-            contract_errors = freshness_contract_errors([candidate], gate)
+            # from existing ones. The whole shadow bundle is checked, not
+            # just the candidate: promoting must not launder an untagged new
+            # doc elsewhere in the tree into the stored index.
+            contract_errors = shadow_contract_errors(shadow, gate)
             if contract_errors:
                 details = "; ".join(
                     f"{error.code}:{error.relative_file}" for error in contract_errors

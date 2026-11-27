@@ -183,24 +183,36 @@ except Exception: print("")')"
   session_id="${session_id:-${native_id:-$(agent_session_uuid)}}"
   AGENT_SESSION_FINISHED=0
   AGENT_SESSION_CHECKPOINTED=0
+  AGENT_SESSION_CHECKPOINT_RC=0
   AGENT_SESSION_RC=0
   agent_session_checkpoint() {
-    [[ "$AGENT_SESSION_CHECKPOINTED" == 1 ]] && return 0
-    AGENT_SESSION_CHECKPOINTED=1
+    # The flag is set only after the kb call completes, so a failed attempt
+    # on the INT/TERM path does not suppress the retry in
+    # agent_session_finish. A failed checkpoint returns nonzero instead of
+    # being discarded.
+    if [[ "$AGENT_SESSION_CHECKPOINTED" == 1 ]]; then return "$AGENT_SESSION_CHECKPOINT_RC"; fi
     "$kb_bin" audit --kb "$kb_root" --source-root "$cwd" --json >/dev/null 2>&1 || true
-    "$kb_bin" session checkpoint "$session_id" --kb "$kb_root" --json >/dev/null 2>&1 || true
+    AGENT_SESSION_CHECKPOINT_RC=0
+    "$kb_bin" session checkpoint "$session_id" --kb "$kb_root" --json >/dev/null 2>&1 || AGENT_SESSION_CHECKPOINT_RC=$?
+    if [[ "$AGENT_SESSION_CHECKPOINT_RC" -eq 0 ]]; then AGENT_SESSION_CHECKPOINTED=1; fi
+    return "$AGENT_SESSION_CHECKPOINT_RC"
   }
   agent_session_finish() {
     [[ "$AGENT_SESSION_FINISHED" == 1 ]] && return 0
     AGENT_SESSION_FINISHED=1
-    agent_session_checkpoint
+    local kb_rc=0
+    agent_session_checkpoint || kb_rc=$?
     "$kb_bin" audit --kb "$kb_root" --source-root "$cwd" --json >/dev/null 2>&1 || true
-    "$kb_bin" session end "$session_id" --kb "$kb_root" --exit-code "$AGENT_SESSION_RC" --json >/dev/null 2>&1 || true
+    "$kb_bin" session end "$session_id" --kb "$kb_root" --exit-code "$AGENT_SESSION_RC" --json >/dev/null 2>&1 || kb_rc=$?
+    # Surface lifecycle failures: a blocked checkpoint or end turns an
+    # otherwise clean run nonzero, without clobbering the agent's own exit
+    # code when the agent itself failed.
+    if [[ "$AGENT_SESSION_RC" -eq 0 ]]; then AGENT_SESSION_RC=$kb_rc; fi
   }
   agent_session_signal() {
     signal_status="$1"
     [[ -n "${capture_marker:-}" ]] && rm -f "$capture_marker"
-    agent_session_checkpoint
+    agent_session_checkpoint || true
     exit "$signal_status"
   }
   local capture_marker=""
