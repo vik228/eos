@@ -74,6 +74,7 @@ for profile in "${profiles[@]}"; do
     prompt="$(awk -F '\t' -v wanted="$row" '$1 == wanted { print $2; exit }' "$fixture")"
     [[ -n "$prompt" ]] || { echo "empty trial prompt: $row" >&2; exit 1; }
     EOS_ROOT="$ROOT" HOME="$tmp_dir/home" EOS_KB_BIN="$fake_kb" EOS_AGENT_DOCTOR=: \
+      EOS_ALLOW_PERSONAL_AGENT_IN_WORK=1 \
       EOS_AGENT_BIN="$fake_agent" EOS_ADHERENCE_PROFILE="$profile" EOS_ADHERENCE_ROW="$row" \
       EOS_ADHERENCE_PROMPT="$prompt" EOS_ADHERENCE_TRANSPORT="$wrapper" \
       EOS_ADHERENCE_LOG="$log" EOS_ADHERENCE_KB_LOG="$kb_log" EOS_KB_ROOT="$kb" \
@@ -99,7 +100,7 @@ grep -Fq 'session checkpoint' "$kb_log"
 grep -Fq 'session end' "$kb_log"
 grep -Fq 'audit' "$kb_log"
 grep -Rqi -- 'Never use the em dash' "$ROOT/configs/agents"
-grep -Rqi -- 'Never write in Hindi' "$ROOT/configs/agents"
+grep -Rqi -- 'never Hindi' "$ROOT/configs/agents"
 grep -Rqi -- 'Always use simple, direct language' "$ROOT/configs/agents"
 grep -Rqi -- 'reading its `SKILL.md` completely and following it is mandatory' "$ROOT/configs/agents"
 grep -Rqi -- 'Trigger `branching-discussion` before the first question' "$ROOT/configs/agents"

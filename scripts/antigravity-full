@@ -3,6 +3,37 @@ set -euo pipefail
 ROOT="${EOS_ROOT:-$HOME/personal/eos}"
 source "$ROOT/scripts/lib-agent-session.sh"
 cwd="${EOS_AGENT_CWD:-$PWD}"
+# Antigravity holds a single account (the personal one). Refuse to start inside the work tree
+# unless explicitly overridden, so a work session never runs under the personal login.
+# Both sides are canonicalized with pwd -P (mirrors bin/guards/codex), so a
+# trailing slash in EOS_WORK_ROOT or a symlinked path cannot bypass the check.
+resolve_dir() {
+  (cd "$1" 2>/dev/null && pwd -P) || printf '%s' "$1"
+}
+strip_slash() {
+  local d="$1"
+  while [[ "$d" != "/" && "$d" == */ ]]; do d="${d%/}"; done
+  printf '%s' "$d"
+}
+work_root="$(strip_slash "$(resolve_dir "${EOS_WORK_ROOT:-$HOME/work}")")"
+cwd_phys="$(strip_slash "$(resolve_dir "$cwd")")"
+in_work=0
+[[ "$cwd_phys" == "$work_root" || "$cwd_phys" == "$work_root/"* ]] && in_work=1
+kb_is_work=0
+if [[ -n "${EOS_KB_ROOT:-}" && -n "${EOS_WORK_KNOWLEDGE_ROOT:-}" ]]; then
+  [[ "$(resolve_dir "$EOS_KB_ROOT")" == "$(resolve_dir "$EOS_WORK_KNOWLEDGE_ROOT")" ]] && kb_is_work=1
+fi
+# Single-KB setup: the same path configured for both KBs means the KB clause
+# cannot tell work from personal, so it is skipped and the cwd decides.
+if [[ -n "${EOS_KB_ROOT:-}" && -n "${EOS_PERSONAL_KNOWLEDGE_ROOT:-}" ]]; then
+  [[ "$(resolve_dir "$EOS_KB_ROOT")" == "$(resolve_dir "$EOS_PERSONAL_KNOWLEDGE_ROOT")" ]] && kb_is_work=0
+fi
+dry_run=0
+[[ " $* " == *" --dry-run "* ]] && dry_run=1
+if [[ ( "$in_work" == 1 || "$kb_is_work" == 1 ) && "${EOS_ALLOW_PERSONAL_AGENT_IN_WORK:-0}" != 1 && "$dry_run" == 0 ]]; then
+  echo "antigravity-full: Antigravity is a single-account (personal) agent and must not run from the work tree ($cwd_phys). Use codex-work or claude-work; override with EOS_ALLOW_PERSONAL_AGENT_IN_WORK=1." >&2
+  exit 1
+fi
 if [[ -n "${EOS_KB_ROOT:-}" ]]; then
   kb="$EOS_KB_ROOT"
 elif [[ "$cwd" == "$HOME/work" || "$cwd" == "$HOME/work"/* ]]; then
