@@ -33,3 +33,5 @@ fi
 export PATH="$EOS_ROOT/bin/guards:$EOS_ROOT/scripts:$EOS_ROOT/bin:$HOME/.local/bin:$PATH"
 
 bindkey -e
+
+alias reading='EOS_PROFILE=books eos workspace launch reading'
