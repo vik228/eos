@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
 import sys
 from dataclasses import dataclass
 from datetime import datetime
 from enum import IntEnum, StrEnum
-from pathlib import Path
-from typing import Any, Final, Sequence, TextIO
+from pathlib import Path, PurePosixPath
+from typing import Any, Final, Iterable, Sequence, TextIO
 
 from .config import InitializationError, RegistryError, WorkspaceRoute, initialize_bundle, resolve_workspace
 from .freshness import audit_freshness, load_freshness
@@ -230,6 +232,22 @@ def _resolve_retrieval_route(args: argparse.Namespace) -> WorkspaceRoute:
     return resolve_workspace(Path.cwd(), kb=args.kb)
 
 
+def _record_session_use(kb: Path, resources: Iterable[str]) -> None:
+    """Record retrieved cards in the session record, best-effort.
+
+    The usage log is the primary retrieval record, but it can be disabled;
+    the session record is the fallback the gate consults either way. Must
+    never fail the retrieval command, so every error is swallowed.
+    """
+    session_id = os.environ.get("EOS_AGENT_SESSION_ID")
+    if not session_id:
+        return
+    try:
+        record_session_reads(kb, session_id, [str(item) for item in resources if item])
+    except (SessionError, OSError, ValueError):
+        pass
+
+
 def _search(args: argparse.Namespace) -> CommandResult:
     try:
         route = _resolve_retrieval_route(args)
@@ -271,6 +289,7 @@ def _search(args: argparse.Namespace) -> CommandResult:
         jev_requested=jev_requested, jev_used=jev_requested and jev_tokens > 0,
         jev_tokens=jev_tokens, cards=[card.resource for card in cards],
     )
+    _record_session_use(route.kb, [card.resource for card in cards])
     return CommandResult("search", ResultStatus.SEARCHED, f"found {len(cards)} result(s)", ExitCode.SUCCESS, data=[card.as_dict() for card in cards])
 
 
@@ -286,21 +305,17 @@ def _show(args: argparse.Namespace) -> CommandResult:
         jev_requested=False, jev_used=False, jev_tokens=0,
         cards=[card.resource],
     )
+    _record_session_use(route.kb, [card.resource])
     return CommandResult("show", ResultStatus.SHOWN, f"showing {card.resource}", ExitCode.SUCCESS, data=card.as_dict())
 
 
 def _related(args: argparse.Namespace) -> CommandResult:
     try:
-        route = _resolve_retrieval_route(args)
-        cards = retrieve_related(route.kb, args.concept, limit=args.limit)
+        cards = retrieve_related(_resolve_retrieval_route(args).kb, args.concept, limit=args.limit)
     except (RegistryError, ValueError) as exc:
         message = exc.remediation if isinstance(exc, RegistryError) else str(exc)
         return CommandResult("related", ResultStatus.VALIDATION_FAILURE, message, ExitCode.VALIDATION, True, getattr(exc, "code", "related.validation"), getattr(exc, "field_path", "$.concept"))
-    record_usage(
-        route.kb, command="related", query=args.concept, project=None,
-        jev_requested=False, jev_used=False, jev_tokens=0,
-        cards=[card.resource for card in cards],
-    )
+    # Suggestions are not reads: related cards are never recorded as used.
     return CommandResult("related", ResultStatus.RELATED, f"found {len(cards)} related concept(s)", ExitCode.SUCCESS, data=[card.as_dict() for card in cards])
 
 
@@ -347,6 +362,7 @@ def _context(args: argparse.Namespace) -> CommandResult:
                 jev_tokens=result_obj.jev_tokens_used,
                 cards=[card.resource for card in result_obj.cards], budget=args.budget,
             )
+            _record_session_use(route.kb, [card.resource for card in result_obj.cards])
             return CommandResult("context", ResultStatus.CONTEXT, f"assembled {len(result_obj.cards)} result card(s) at {result_obj.estimated_units} units (jev={result_obj.jev_used})", ExitCode.SUCCESS, data=data)
         result = retrieve_context(route.kb, args.query, budget=args.budget, project=project, related_projects=related_projects, components=args.components)
     except (RegistryError, ValueError) as exc:
@@ -357,6 +373,7 @@ def _context(args: argparse.Namespace) -> CommandResult:
         jev_requested=False, jev_used=False, jev_tokens=0,
         cards=[card.resource for card in result.cards], budget=args.budget,
     )
+    _record_session_use(route.kb, [card.resource for card in result.cards])
     return CommandResult("context", ResultStatus.CONTEXT, f"assembled {len(result.cards)} result card(s) at {result.estimated_units} units", ExitCode.SUCCESS, data=result.as_dict())
 
 
@@ -499,6 +516,9 @@ def _deprecate(args: argparse.Namespace) -> CommandResult:
     return CommandResult("deprecate", ResultStatus.DEPRECATED, f"deprecated {args.concept}", ExitCode.SUCCESS, data=proposal.payload())
 
 
+_UNKNOWN_WARNING_RE = re.compile(r"^(freshness|source|external source|time|coverage) unknown:")
+
+
 def _lifecycle_audit(route: WorkspaceRoute, command: str, session_id: str | None = None) -> CommandResult | None:
     """Audit the declared workspace before a lifecycle mutation is persisted."""
     try:
@@ -521,48 +541,20 @@ def _lifecycle_audit(route: WorkspaceRoute, command: str, session_id: str | None
 
     warnings = tuple(getattr(report, "warnings", ()))
     contradictions = tuple(getattr(report, "contradictions", ()))
-    # Unknown means that a concept has no freshness contract or that its
-    # evidence cannot currently be evaluated. Keep it visible in audit and
-    # retrieval output, but do not deadlock an otherwise valid agent session.
-    # Confirmed stale evidence and contradictions remain lifecycle blockers.
-    if not hasattr(report, "time"):
-        # Legacy report shape without per-finding time detail: every
-        # confirmed stale warning blocks KB-wide, as before.
-        if report.overall != "stale" and not contradictions:
-            return None
-
-        # Unknown findings are advisory: they stay visible in audit output and
-        # the JSON report payload, but they must not name the lifecycle blocker.
-        # Confirmed stale evidence and contradictions are the blockers, so they
-        # lead the message in their original audit order (time findings already
-        # carry their stale_after dates).
-        blocking = [reason for reason in warnings if "unknown" not in reason]
-        reasons = blocking
-        if contradictions and not any("contradiction" in reason for reason in reasons):
-            reasons.append(f"{len(contradictions)} contradiction(s) detected")
-        if not reasons:
-            reasons.append(f"freshness is {report.overall}")
-        report_data = report.as_dict() if hasattr(report, "as_dict") else None
-        return CommandResult(
-            command,
-            ResultStatus.VALIDATION_FAILURE,
-            f"freshness audit blocked lifecycle: {'; '.join(reasons)}",
-            ExitCode.BLOCKED_LIFECYCLE,
-            True,
-            "freshness.lifecycle_blocked",
-            "$.freshness",
-            report_data,
-        )
-
     # Session-scoped expiry: an expired tracked doc blocks only the session
-    # that used it. "Used" is kb retrieval in that session (usage log) plus
-    # direct reads recorded into the session record. Other sessions see the
-    # same expiry as a warning via kb audit/stale, not a block.
-    # Contradictions and non-time stale evidence still block KB-wide.
+    # that used it. "Used" is kb retrieval recorded in the session record
+    # (which mirrors the usage log) plus direct reads recorded into the
+    # session record. Other sessions see the same expiry as a warning via
+    # kb audit/stale, not a block. Contradictions and non-time stale
+    # evidence (drift, pending, coverage) still block KB-wide.
+    # Unknown findings are advisory in every case: they stay visible in audit
+    # output and the JSON report payload, but they never name the lifecycle
+    # blocker. Matching is by finding kind, so a drifted source on a path
+    # that merely contains the word "unknown" still blocks.
     kb_wide = [
         reason
         for reason in warnings
-        if "unknown" not in reason and not reason.startswith("time ")
+        if not reason.startswith("time ") and not _UNKNOWN_WARNING_RE.match(reason)
     ]
     stale_detail = {
         finding.resource: finding.stale_after
@@ -593,11 +585,26 @@ def _lifecycle_audit(route: WorkspaceRoute, command: str, session_id: str | None
     )
 
 
+def _invalid_used_resource(value: object) -> bool:
+    text = str(value) if value is not None else ""
+    if not text:
+        return True
+    candidate = PurePosixPath(text)
+    return candidate.is_absolute() or ".." in candidate.parts
+
+
 def _session_command(args: argparse.Namespace) -> CommandResult:
     try:
         route = _resolve_retrieval_route(args)
         command = args.command_path.split()[1]
         if command in {"checkpoint", "end"} and getattr(args, "used_resources", None):
+            invalid = [str(item) for item in args.used_resources if _invalid_used_resource(item)]
+            if invalid:
+                return CommandResult(
+                    args.command_path, ResultStatus.VALIDATION_FAILURE,
+                    f"used resource escapes the knowledge bundle: {invalid[0]!r}",
+                    ExitCode.VALIDATION, True, "session.invalid_used_resource", "$.used_resource",
+                )
             record_session_reads(route.kb, args.session_id, list(args.used_resources))
         if command in {"checkpoint", "end"}:
             blocked = _lifecycle_audit(route, args.command_path, getattr(args, "session_id", None))

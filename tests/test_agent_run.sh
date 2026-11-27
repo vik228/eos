@@ -69,7 +69,8 @@ out="$("$script" start --dry-run --agent antigravity --model m2 --effort low --r
 [[ "$out" == *"type Log"* ]]
 [[ "$out" == *"date"* ]]
 [[ "$out" == *"status"* ]]
-[[ "$out" == *"stale_after"* ]]
+[[ "$out" == *"freshness: historical"* ]]
+[[ "$out" != *"stale_after"* ]]
 
 # claude command shape
 out="$("$script" start --dry-run --agent claude --model m3 --profile personal \

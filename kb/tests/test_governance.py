@@ -63,6 +63,7 @@ def test_capture_review_and_promote_are_hash_bound(
     root = tmp_path / "knowledge"
     root.mkdir()
     _session(root, "parent")
+    index_bundle(root)
     proposal_file = tmp_path / "proposal.yaml"
     result = "---\ntype: Decision\ntitle: Service\nresource: kb:demo/service\nfreshness: historical\n---\n# Service\nCurrent behavior.\n"
     _proposal_input(proposal_file, result)
@@ -284,7 +285,7 @@ def test_promote_writes_hash_bound_review_event(tmp_path: Path) -> None:
     import json as json_module
 
     from eos_kb.freshness import audit_freshness
-    from eos_kb.gate import last_review_for
+    from eos_kb.gate import latest_review_event
     from eos_kb.normalize import normalized_content_hash
 
     root = tmp_path / "knowledge"
@@ -304,8 +305,9 @@ def test_promote_writes_hash_bound_review_event(tmp_path: Path) -> None:
     promoted = promote_proposal(root, proposal.proposal_id, session_id="parent", source_root=source_root)
     assert promoted.state is ProposalState.PROMOTED
     content_hash = normalized_content_hash(result)
-    assert last_review_for(root, "projects/demo/service.md", content_hash) is not None
-    assert last_review_for(root, "projects/demo/service.md", "sha256:" + "0" * 64) is None
+    latest = latest_review_event(root, "projects/demo/service.md")
+    assert latest is not None
+    assert latest[1] == content_hash
     lines = (root / ".eos" / "reviews.jsonl").read_text(encoding="utf-8").splitlines()
     assert len(lines) == 1
     event = json_module.loads(lines[0])
@@ -315,8 +317,7 @@ def test_promote_writes_hash_bound_review_event(tmp_path: Path) -> None:
     assert [item.state for item in report.time] == ["current"]
 
 
-def test_direct_change_approval_records_review_event(tmp_path: Path) -> None:
-    from eos_kb.gate import last_review_for
+def test_direct_change_approval_writes_no_review_event(tmp_path: Path) -> None:
     from eos_kb.normalize import normalized_content_hash
 
     root = tmp_path / "knowledge"
@@ -327,4 +328,133 @@ def test_direct_change_approval_records_review_event(tmp_path: Path) -> None:
     target.write_text(text, encoding="utf-8")
     index_bundle(root)
     review_direct_change(root, "concept.md", actor="Vikas", session_id="parent")
-    assert last_review_for(root, "concept.md", normalized_content_hash(text)) is not None
+    # Self-approval records the acceptance but must not move expiry.
+    assert not (root / ".eos" / "reviews.jsonl").exists()
+    approvals = [
+        json.loads(line)
+        for line in (root / ".eos" / "approvals.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert approvals[-1]["proposal_id"] == "direct-change:concept.md"
+    assert approvals[-1]["proposed_result_hash"] == normalized_content_hash(text)
+
+
+def test_direct_change_approval_does_not_reset_expiry(tmp_path: Path) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    from eos_kb.freshness import audit_freshness
+    from eos_kb.indexer import index_bundle
+
+    root = tmp_path / "knowledge"
+    root.mkdir()
+    _session(root, "parent")
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    index_bundle(root)
+    proposal_file = tmp_path / "proposal.yaml"
+    result = (
+        "---\ntype: Decision\ntitle: Service\nresource: kb:demo/service\n"
+        "freshness: tracked\nreview_every: 30d\n---\n# Service\nCurrent behavior.\n"
+    )
+    _proposal_input(proposal_file, result)
+    proposal = capture_proposal(root, target="projects/demo/service.md", proposal_file=proposal_file, session_id="parent")
+    review_proposal(root, proposal.proposal_id, actor="Vikas", session_id="parent", decision="accepted")
+    promote_proposal(root, proposal.proposal_id, session_id="parent", source_root=source_root)
+
+    expired_at = datetime.now(timezone.utc) + timedelta(days=40)
+    assert audit_freshness(root, source_root, now=expired_at).time[0].state == "stale"
+    # Approving the stale content directly changes nothing about expiry.
+    review_direct_change(root, "projects/demo/service.md", actor="Vikas", session_id="parent")
+    reread = audit_freshness(root, source_root, now=expired_at)
+    assert reread.time[0].state == "stale"
+
+
+def test_promote_normalizes_absolute_and_dot_targets(tmp_path: Path) -> None:
+    import json as json_module
+
+    root = tmp_path / "knowledge"
+    root.mkdir()
+    _session(root, "parent")
+    (root / "projects" / "demo").mkdir(parents=True)
+    index_bundle(root)
+    proposal_file = tmp_path / "proposal.yaml"
+    result = "---\ntype: Decision\ntitle: Service\nresource: kb:demo/service\nfreshness: historical\n---\n# Service\nCurrent behavior.\n"
+    _proposal_input(proposal_file, result)
+    absolute = (root / "projects" / "demo" / "service.md").as_posix()
+    proposal = capture_proposal(root, target=absolute, proposal_file=proposal_file, session_id="parent")
+    review_proposal(root, proposal.proposal_id, actor="Vikas", session_id="parent", decision="accepted")
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    assert promote_proposal(root, proposal.proposal_id, session_id="parent", source_root=source_root).state is ProposalState.PROMOTED
+    lines = (root / ".eos" / "reviews.jsonl").read_text(encoding="utf-8").splitlines()
+    assert json_module.loads(lines[-1])["target"] == "projects/demo/service.md"
+
+    proposal_file2 = tmp_path / "proposal2.yaml"
+    _proposal_input(proposal_file2, result.replace("Current behavior.", "Second behavior."))
+    dotted = capture_proposal(root, target="./projects/demo/service.md", proposal_file=proposal_file2, session_id="parent")
+    review_proposal(root, dotted.proposal_id, actor="Vikas", session_id="parent", decision="accepted")
+    assert promote_proposal(root, dotted.proposal_id, session_id="parent", source_root=source_root).state is ProposalState.PROMOTED
+    lines = (root / ".eos" / "reviews.jsonl").read_text(encoding="utf-8").splitlines()
+    assert json_module.loads(lines[-1])["target"] == "projects/demo/service.md"
+
+
+def test_direct_change_normalizes_dot_target(tmp_path: Path) -> None:
+    root = tmp_path / "knowledge"
+    root.mkdir()
+    _session(root, "parent")
+    target = root / "concept.md"
+    target.write_text("---\ntype: Decision\ntitle: Concept\nresource: kb:concept\n---\nOriginal\n", encoding="utf-8")
+    index_bundle(root)
+    record = review_direct_change(root, "./concept.md", actor="Vikas", session_id="parent")
+    assert record["proposal_id"] == "direct-change:concept.md"
+
+
+def test_promote_existing_untagged_doc_needs_no_contract(tmp_path: Path) -> None:
+    root = tmp_path / "knowledge"
+    (root / "projects" / "demo").mkdir(parents=True)
+    _session(root, "parent")
+    target = root / "projects" / "demo" / "service.md"
+    target.write_text("---\ntype: Decision\ntitle: Service\nresource: kb:demo/service\n---\nOriginal\n", encoding="utf-8")
+    index_bundle(root)
+    proposal_file = tmp_path / "proposal.yaml"
+    result = "---\ntype: Decision\ntitle: Service\nresource: kb:demo/service\n---\nUpdated\n"
+    _proposal_input(proposal_file, result)
+    proposal = capture_proposal(root, target="projects/demo/service.md", proposal_file=proposal_file, session_id="parent")
+    review_proposal(root, proposal.proposal_id, actor="Vikas", session_id="parent", decision="accepted")
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    assert promote_proposal(root, proposal.proposal_id, session_id="parent", source_root=source_root).state is ProposalState.PROMOTED
+
+
+def test_promote_without_gate_fails_closed(tmp_path: Path) -> None:
+    root = tmp_path / "knowledge"
+    root.mkdir()
+    _session(root, "parent")
+    proposal_file = tmp_path / "proposal.yaml"
+    result = "---\ntype: Decision\ntitle: Service\nresource: kb:demo/service\nfreshness: historical\n---\n# Service\nCurrent behavior.\n"
+    _proposal_input(proposal_file, result)
+    proposal = capture_proposal(root, target="projects/demo/service.md", proposal_file=proposal_file, session_id="parent")
+    review_proposal(root, proposal.proposal_id, actor="Vikas", session_id="parent", decision="accepted")
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    with pytest.raises(GovernanceError) as raised:
+        promote_proposal(root, proposal.proposal_id, session_id="parent", source_root=source_root)
+    assert raised.value.code == "gate.missing"
+
+
+def test_promote_with_corrupt_gate_fails_closed(tmp_path: Path) -> None:
+    root = tmp_path / "knowledge"
+    root.mkdir()
+    _session(root, "parent")
+    index_bundle(root)
+    (root / ".eos" / "freshness-gate.json").write_text("{truncated", encoding="utf-8")
+    proposal_file = tmp_path / "proposal.yaml"
+    result = "---\ntype: Decision\ntitle: Service\nresource: kb:demo/service\nfreshness: historical\n---\n# Service\nCurrent behavior.\n"
+    _proposal_input(proposal_file, result)
+    proposal = capture_proposal(root, target="projects/demo/service.md", proposal_file=proposal_file, session_id="parent")
+    review_proposal(root, proposal.proposal_id, actor="Vikas", session_id="parent", decision="accepted")
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    with pytest.raises(GovernanceError) as raised:
+        promote_proposal(root, proposal.proposal_id, session_id="parent", source_root=source_root)
+    assert raised.value.code == "gate.corrupt"

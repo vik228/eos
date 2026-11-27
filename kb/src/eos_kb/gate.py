@@ -7,15 +7,22 @@ ones; the gate record (written once at activation, never updated) is the
 single authoritative new/existing boundary, enforced in both ``kb validate``
 and the promote path.
 
+A gate file that is missing, unreadable, or the wrong version fails closed:
+callers refuse and report instead of silently re-activating, because a fresh
+snapshot would bless every new doc as existing and move the boundary.
+
 Last review is a review *event* bound to the promoted content hash, never a
 bare frontmatter edit:
 
-- ``kb promote`` (and direct-change approval) append a review event carrying
-  the exact promoted content hash and timestamp.
-- Expiry resolves the latest event whose hash still matches the indexed
-  content. A ``reviewed_at`` edit without a matching review event moves
-  nothing: the doc reports unknown until it is reviewed through the
-  proposal flow.
+- ``kb promote`` appends a review event carrying the exact promoted content
+  hash and timestamp. Direct-change approvals deliberately do not: a
+  self-supplied ``--actor`` must not reset expiry.
+- An event counts only when it is well-formed, not future-dated, and linked
+  to an accepted approval for the same proposal id and content hash, so a
+  forged ``reviews.jsonl`` line cannot move expiry.
+- Expiry is based on the latest event for the target. A content hash mismatch
+  with the latest event means the doc was edited since review, which reports
+  stale (re-review to clear), never unknown.
 - Docs already tracked at activation get an initial review from the gate
   record itself: while their content still matches the activation snapshot,
   the activation timestamp counts as their first review.
@@ -35,6 +42,16 @@ from .storage import atomic_write, writer_lock
 GATE_SCHEMA_VERSION = 1
 GATE_FILENAME = "freshness-gate.json"
 REVIEWS_FILENAME = "reviews.jsonl"
+REVIEW_EVENT_VERSION = 1
+
+
+class GateError(ValueError):
+    """A missing, corrupt, or version-skewed gate boundary or review ledger."""
+
+    def __init__(self, code: str, field_path: str, message: str) -> None:
+        self.code = code
+        self.field_path = field_path
+        super().__init__(message)
 
 
 def _parse_time(value: str) -> datetime | None:
@@ -72,6 +89,38 @@ def _valid_gate(value: Any) -> bool:
     )
 
 
+def _gate_failure(root: Path) -> GateError:
+    """Fail closed: never silently re-activate a bad boundary.
+
+    A corrupt or version-skewed record cannot be trusted to tell new docs
+    from existing ones, and a fresh snapshot would bless everything on disk
+    as existing. Refuse and report; the operator re-activates explicitly by
+    removing the bad file and running kb index.
+    """
+    path = gate_path(root)
+    if not path.is_file():
+        return GateError(
+            "gate.missing",
+            "$.freshness-gate",
+            "Freshness gate is not activated; run kb index to activate it.",
+        )
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        value = None
+    if isinstance(value, dict) and value.get("schema_version") != GATE_SCHEMA_VERSION:
+        return GateError(
+            "gate.version_mismatch",
+            "$.freshness-gate",
+            "Freshness gate schema is not version 1; remove .eos/freshness-gate.json and run kb index to re-activate.",
+        )
+    return GateError(
+        "gate.corrupt",
+        "$.freshness-gate",
+        "Freshness gate record is unreadable or malformed; remove .eos/freshness-gate.json and run kb index to re-activate.",
+    )
+
+
 def load_gate(root: Path) -> dict[str, Any] | None:
     """Return the activation record, or None when there is no usable boundary."""
     try:
@@ -79,6 +128,14 @@ def load_gate(root: Path) -> dict[str, Any] | None:
     except (OSError, json.JSONDecodeError):
         return None
     return value if _valid_gate(value) else None
+
+
+def require_gate(root: Path) -> dict[str, Any]:
+    """Return the activation record, or fail closed when it is unusable."""
+    gate = load_gate(root)
+    if gate is not None:
+        return gate
+    raise _gate_failure(root)
 
 
 def _snapshot_docs(root: Path) -> dict[str, str]:
@@ -189,7 +246,7 @@ def _review_event(
     reviewed_at: str | None = None,
 ) -> dict[str, Any]:
     return {
-        "schema_version": 1,
+        "schema_version": REVIEW_EVENT_VERSION,
         "target": target,
         "content_hash": content_hash,
         "reviewed_at": reviewed_at or datetime.now(timezone.utc).isoformat(),
@@ -216,20 +273,17 @@ def format_review_event(
     ), sort_keys=True) + "\n").encode("utf-8")
 
 
-def last_review_for(root: Path, target: str, content_hash: str | None) -> datetime | None:
-    """Latest review event whose hash still matches the indexed content.
+def _accepted_review_hashes(root: Path) -> set[tuple[str, str]]:
+    """(proposal_id, content hash) pairs with an accepted approval.
 
-    Returns None when the doc was never reviewed at its current content,
-    which includes every bare ``reviewed_at`` edit: without a matching
-    review event there is no last review to expire from.
+    A review event counts only when it links to one of these, so a forged
+    reviews.jsonl line cannot move expiry on its own.
     """
-    if not content_hash:
-        return None
     try:
-        lines = reviews_path(root).read_text(encoding="utf-8").splitlines()
+        lines = (root / ".eos" / "approvals.jsonl").read_text(encoding="utf-8").splitlines()
     except OSError:
-        return None
-    latest: datetime | None = None
+        return set()
+    linked: set[tuple[str, str]] = set()
     for line in lines:
         if not line.strip():
             continue
@@ -239,14 +293,74 @@ def last_review_for(root: Path, target: str, content_hash: str | None) -> dateti
             continue
         if (
             not isinstance(record, dict)
-            or record.get("target") != target
-            or record.get("content_hash") != content_hash
+            or record.get("decision") != "accepted"
+            or not isinstance(record.get("proposal_id"), str)
+            or not isinstance(record.get("proposed_result_hash"), str)
         ):
             continue
-        reviewed_at = record.get("reviewed_at")
-        parsed = _parse_time(reviewed_at) if isinstance(reviewed_at, str) else None
-        if parsed is None:
+        linked.add((record["proposal_id"], record["proposed_result_hash"]))
+    return linked
+
+
+def _valid_review_event(
+    record: Any, *, target: str, now: datetime, linked: set[tuple[str, str]]
+) -> tuple[datetime, str] | None:
+    if not isinstance(record, dict):
+        return None
+    if record.get("schema_version") != REVIEW_EVENT_VERSION:
+        return None
+    if record.get("target") != target:
+        return None
+    content_hash = record.get("content_hash")
+    proposal_id = record.get("proposal_id")
+    if (
+        not isinstance(content_hash, str)
+        or not content_hash.startswith("sha256:")
+        or len(content_hash) != len("sha256:") + 64
+        or not isinstance(proposal_id, str)
+        or not proposal_id
+    ):
+        return None
+    reviewed_at = record.get("reviewed_at")
+    parsed = _parse_time(reviewed_at) if isinstance(reviewed_at, str) else None
+    if parsed is None or parsed > now:
+        # Unparseable or future-dated lines are rejected, never trusted.
+        return None
+    if (proposal_id, content_hash) not in linked:
+        # No accepted approval for this proposal id and content hash.
+        return None
+    return parsed, content_hash
+
+
+def latest_review_event(
+    root: Path, target: str, *, now: datetime | None = None
+) -> tuple[datetime, str] | None:
+    """Latest linkage-valid review event for the target, with its hash.
+
+    Returns None when the target was never reviewed through the proposal
+    flow. Callers treat a hash mismatch with this event as stale (edited
+    since review), never unknown.
+    """
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    current = current.astimezone(timezone.utc)
+    try:
+        lines = reviews_path(root).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    linked = _accepted_review_hashes(root)
+    latest: tuple[datetime, str] | None = None
+    for line in lines:
+        if not line.strip():
             continue
-        if latest is None or parsed > latest:
-            latest = parsed
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        event = _valid_review_event(record, target=target, now=current, linked=linked)
+        if event is None:
+            continue
+        if latest is None or event[0] > latest[0]:
+            latest = event
     return latest

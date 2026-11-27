@@ -101,7 +101,6 @@ if [[ -z "${DRY_RUN:-}" && "$session_id" != nosid && "$last_lines" -gt 0 && "$to
 fi
 date_value="$(date +%F)"
 year="${date_value%%-*}"
-stale_after="$(date -v+3m +%F 2>/dev/null || date -d '+3 months' +%F)"
 log_dir="$kb/logs/$year"
 mkdir -p "$log_dir"
 
@@ -130,7 +129,7 @@ title: $date_value - <short human title>
 type: Log
 date: $date_value
 status: stable
-stale_after: "$stale_after"
+freshness: historical
 ---
 
 Available queues for this $profile profile only:

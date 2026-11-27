@@ -5,8 +5,8 @@ import os
 import sqlite3
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any
+from pathlib import Path, PurePosixPath
+from typing import Any, Iterable
 
 from .storage import atomic_write, state_directory, writer_lock
 from .usage_log import read_usage
@@ -165,20 +165,39 @@ def checkpoint_session(root: Path, session_id: str, *, changed_paths: list[str] 
     return record
 
 
+def _sanitized_reads(resources: Iterable[object]) -> list[str]:
+    """Keep card resources and repo-relative paths; reject escapes.
+
+    Absolute paths and parent-directory escapes must never reach the session
+    record: a --used-resource value is matched against KB-relative paths and
+    card resources only.
+    """
+    cleaned: list[str] = []
+    for item in resources:
+        value = str(item) if item is not None else ""
+        if not value:
+            raise SessionError(f"used resource is empty: {value!r}")
+        candidate = PurePosixPath(value)
+        if candidate.is_absolute() or ".." in candidate.parts:
+            raise SessionError(f"used resource escapes the knowledge bundle: {value!r}")
+        cleaned.append(value)
+    return sorted(set(cleaned))
+
+
 def record_session_reads(root: Path, session_id: str, resources: list[str]) -> dict[str, Any]:
     """Record docs this session read directly (agent Read/cat, outside kb search).
 
-    Retrieval via kb search/context is already captured in the usage log; this
-    covers the other half of "used" so the freshness gate can scope an expired
-    tracked doc to the sessions that actually saw it. Only active sessions can
-    record reads.
+    Retrieval via kb search/context/show also lands here (see cli), so the
+    gate works with the usage log disabled; this covers direct reads too.
+    Only active sessions can record reads.
     """
+    cleaned = _sanitized_reads(resources)
     path = _path(root, session_id)
     with writer_lock(_state(root)):
         record = _read(root, session_id)
         if record["state"] != "active":
             raise SessionError("only active sessions can record reads")
-        merged = sorted(set(record.get("used_resources", [])) | {str(item) for item in resources if str(item)})
+        merged = sorted(set(record.get("used_resources", [])) | set(cleaned))
         record["used_resources"] = merged
         record["updated_at"] = _now()
         _write(path, record)
@@ -238,11 +257,11 @@ def load_session(root: Path, session_id: str) -> dict[str, Any]:
 def session_used_resources(root: Path, session_id: str | None) -> set[str]:
     """Docs the session used: kb retrieval cards plus recorded direct reads.
 
-    Retrieval (search/context/show/related) lands in the usage log keyed by
-    the agent session id, which the wrappers set to the kb session id.
-    Direct file reads land in the session record via record_session_reads.
-    Entries recorded as repo-relative paths are resolved to the card
-    resources the freshness report names; the raw values are kept too.
+    Retrieval (search/context/show) lands in both the usage log and the
+    session record, so the gate works with the usage log disabled. Related
+    suggestions deliberately do not count as used. Direct file reads land in
+    the session record via record_session_reads (repo-relative paths are
+    resolved to the card resources the freshness report names).
     """
     if not session_id:
         return set()

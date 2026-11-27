@@ -11,6 +11,7 @@ from eos_kb.sessions import (
     SessionError,
     checkpoint_session,
     end_session,
+    load_session,
     recover_sessions,
     resume_session,
     start_session,
@@ -131,3 +132,17 @@ def test_session_used_resources_unions_usage_log_and_session_record(
     assert session_used_resources(state_root, "s1") == {"kb:demo/a", "kb:demo/b"}
     assert session_used_resources(state_root, "s-other") == set()
     assert session_used_resources(state_root, None) == set()
+
+
+def test_record_session_reads_rejects_path_escapes(state_root: Path) -> None:
+    from eos_kb.sessions import record_session_reads
+
+    session = start_session(
+        state_root, cwd=state_root, agent="codex", profile="personal", session_id="s1"
+    )
+    for bad in ("../escape.md", "/etc/passwd", "a/../../b.md", ""):
+        with pytest.raises(SessionError, match="escapes|used resource"):
+            record_session_reads(state_root, session["session_id"], [bad])
+    assert load_session(state_root, session["session_id"])["used_resources"] == []
+    record = record_session_reads(state_root, session["session_id"], ["notes/ok.md", "kb:demo/a"])
+    assert record["used_resources"] == ["kb:demo/a", "notes/ok.md"]

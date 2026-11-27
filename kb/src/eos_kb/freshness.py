@@ -11,7 +11,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 from urllib.parse import unquote, urlparse
 
-from .gate import activation_review_at, last_review_for, load_gate
+from .gate import GateError, activation_review_at, latest_review_event, require_gate
 from .indexer import parse_review_window, valid_manifest
 from .storage import SCHEMA_VERSION, atomic_write, state_directory, writer_lock
 
@@ -477,7 +477,10 @@ def audit_freshness(
     source_findings: list[SourceFinding] = []
     external_findings: list[ExternalSourceFinding] = []
     time_findings: list[TimeFinding] = []
-    gate = load_gate(root)
+    try:
+        gate = require_gate(root)
+    except GateError as exc:
+        raise FreshnessValidationError(exc.code, "$.freshness", str(exc)) from exc
     content_hashes = {
         item.get("path"): item.get("content_hash")
         for item in manifest["concepts"]
@@ -576,38 +579,42 @@ def audit_freshness(
         mode = row["freshness_mode"]
         if row["status"] == "deprecated" or mode == "historical":
             continue
-        if row["type"] == "Log" and mode != "tracked":
-            continue
         if mode != "tracked":
             continue
         window_days = parse_review_window(row["review_every"])
         if window_days is None:
-            time_findings.append(
-                TimeFinding(
-                    resource,
-                    row["review_every"] or "review window missing",
-                    "unknown",
-                )
-            )
+            # Tracked docs without a window fail kb validate unconditionally,
+            # so the audit stays silent here instead of misusing the
+            # stale_after field; the concept still reports unknown when it
+            # has no other current evidence.
             continue
-        # Last review is the latest review event whose content hash still
-        # matches the indexed content; a bare reviewed_at edit has no event
-        # and therefore never moves expiry. Docs already tracked at gate
+        # Last review is the latest linkage-valid review event for the
+        # target. A hash mismatch with that event means the doc was edited
+        # since review: expiry survives the edit and reports stale until
+        # re-review, never silently unknown. Docs already tracked at gate
         # activation fall back to the activation timestamp while their
-        # content is unchanged since the snapshot.
+        # content is unchanged since the snapshot; a doc with no review at
+        # all stays unknown via the concept fallback below.
         current_hash = content_hashes.get(row["relative_file"])
-        last_review = last_review_for(root, row["relative_file"], current_hash)
-        if last_review is None:
-            last_review = activation_review_at(gate, row["relative_file"], current_hash)
-        if last_review is None:
-            time_findings.append(TimeFinding(resource, row["review_every"], "unknown"))
-            continue
-        effective = last_review + timedelta(days=window_days)
+        latest = latest_review_event(root, row["relative_file"], now=generated)
+        if latest is None:
+            initial = activation_review_at(gate, row["relative_file"], current_hash)
+            if initial is None:
+                continue
+            effective = initial + timedelta(days=window_days)
+            state = "stale" if generated >= effective else "current"
+        else:
+            reviewed_at, reviewed_hash = latest
+            effective = reviewed_at + timedelta(days=window_days)
+            if reviewed_hash == current_hash:
+                state = "stale" if generated >= effective else "current"
+            else:
+                state = "stale"
         time_findings.append(
             TimeFinding(
                 resource,
                 effective.isoformat(),
-                "stale" if generated >= effective else "current",
+                state,
             )
         )
 

@@ -24,7 +24,8 @@ output="$(DRY_RUN=1 EOS_CAPTURE_PROFILE=work EOS_CAPTURE_AGENT=claude \
   EOS_CAPTURE_KB_ROOT="$kb" EOS_CAPTURE_WORKSPACE_ROOT="$project" \
   EOS_CAPTURE_PROJECT_SLUG=demo "$capture" SessionEnd "$transcript")"
 [[ "$output" == *"type: Log"* ]]
-[[ "$output" == *'stale_after:'* ]]
+[[ "$output" == *'freshness: historical'* ]]
+[[ "$output" != *'stale_after:'* ]]
 [[ "$output" == *"$queue"* ]]
 [[ "$output" == *"do not append an item that is already open"* ]]
 

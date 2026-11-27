@@ -165,16 +165,23 @@ non-semantic.
   launches with no EOS session only audit; they never checkpoint.
 - Only confirmed stale evidence and contradictions block `kb checkpoint` and
   `kb session end`; `unknown` findings stay visible in audit output but never
-  block (`kb/src/eos_kb/cli.py`, `_lifecycle_audit`). A concept past its
-  `stale_after` blocks even when no proposal is open for it: pending queues
-  are indexed like any other concept, and the time check does not consider
-  checkbox state.
+  block (`kb/src/eos_kb/cli.py`, `_lifecycle_audit`). Expiry is session
+  scoped: an expired `tracked` doc blocks only the session that used it
+  (`kb search`/`context`/`show` cards recorded in the session record, or
+  direct reads recorded with `--used-resource`); other sessions get a warning
+  via `kb stale`. Contradictions, source drift, and coverage drift still block
+  every session. `stale_after` is inert and never blocks: pending queues are
+  indexed like any other concept. Tracked docs expire from their
+  `review_every` window counted from the latest review event bound to the
+  promoted content hash (see the freshness gate in `kb/src/eos_kb/gate.py`).
 - `kb index` keeps the old index when validation fails: a YAML error (for
   example an unquoted `: ` in a title) returns the current database
-  untouched, so a fixed `stale_after` date is not seen until the YAML error
+  untouched, so a fixed frontmatter field is not seen until the YAML error
   is fixed and the KB is reindexed (`kb/src/eos_kb/indexer.py`,
-  `index_bundle`). Freshness reads `stale_after` from the index database, not
-  from the files.
+  `index_bundle`). Freshness reads the contract fields from the index
+  database, not from the files. `kb validate` is read-only and never writes
+  state; a missing, corrupt, or version-skewed `.eos/freshness-gate.json`
+  fails closed with a `gate.*` error instead of re-activating.
 
 ## Global discussion contract
 

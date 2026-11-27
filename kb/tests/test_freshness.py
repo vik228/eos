@@ -17,8 +17,14 @@ from eos_kb.freshness import (
     audit_freshness,
     load_freshness,
 )
-from eos_kb.gate import ensure_gate_activation, record_review_event
-from eos_kb.indexer import index_bundle
+from eos_kb.gate import (
+    GateError,
+    ensure_gate_activation,
+    latest_review_event,
+    record_review_event,
+    require_gate,
+)
+from eos_kb.indexer import index_bundle, validate_bundle
 from eos_kb.retrieval import search
 from eos_kb.schema import load_schema
 from eos_kb.storage import SCHEMA_VERSION, state_directory
@@ -113,6 +119,47 @@ def _indexed_content_hash(kb: Path, relative: str) -> str:
         if item["path"] == relative:
             return item["content_hash"]
     raise AssertionError(f"{relative} is not indexed")
+
+
+def _record_linked_review(
+    kb: Path,
+    target: str,
+    content_hash: str,
+    reviewed_at: str,
+    *,
+    proposal_id: str = "proposal-1",
+    session_id: str = "session-1",
+) -> None:
+    """Write an accepted approval plus its review event, as promote would.
+
+    Review events only count when linked to an accepted approval for the
+    same proposal id and content hash, so tests must write both halves.
+    """
+    approvals = kb / ".eos" / "approvals.jsonl"
+    approvals.parent.mkdir(parents=True, exist_ok=True)
+    with approvals.open("a", encoding="utf-8") as stream:
+        stream.write(
+            json.dumps({
+                "schema_version": 1,
+                "proposal_id": proposal_id,
+                "actor": "test",
+                "timestamp": reviewed_at,
+                "proposal_hash": "sha256:" + "0" * 64,
+                "base_target_hash": content_hash,
+                "proposed_result_hash": content_hash,
+                "decision": "accepted",
+                "session_id": session_id,
+            })
+            + "\n"
+        )
+    record_review_event(
+        kb,
+        target=target,
+        content_hash=content_hash,
+        proposal_id=proposal_id,
+        session_id=session_id,
+        reviewed_at=reviewed_at,
+    )
 
 
 def test_git_source_drift_uses_revision_blob_and_persists_external_state(
@@ -342,7 +389,7 @@ def test_naive_audit_time_is_interpreted_as_utc(
     )
     index_bundle(isolated_state)
     content_hash = _indexed_content_hash(isolated_state, "time.md")
-    record_review_event(
+    _record_linked_review(
         isolated_state,
         target="time.md",
         content_hash=content_hash,
@@ -1028,7 +1075,7 @@ def test_tracked_window_expiry_uses_hash_bound_review_event(
     )
     index_bundle(isolated_state)
     content_hash = _indexed_content_hash(isolated_state, "router.md")
-    record_review_event(
+    _record_linked_review(
         isolated_state,
         target="router.md",
         content_hash=content_hash,
@@ -1045,7 +1092,7 @@ def test_tracked_window_expiry_uses_hash_bound_review_event(
     assert expired.time[0].state == "stale"
     assert expired.time[0].stale_after == "2026-01-31T00:00:00+00:00"
 
-    record_review_event(
+    _record_linked_review(
         isolated_state,
         target="router.md",
         content_hash=content_hash,
@@ -1061,12 +1108,13 @@ def test_tracked_window_expiry_uses_hash_bound_review_event(
     assert current.time[0].state == "current"
 
 
-def test_review_event_hash_mismatch_reports_unknown(
+def test_review_event_hash_mismatch_reports_stale(
     tmp_path: Path,
     isolated_state: Path,
 ) -> None:
-    # Content changed after the review: the old event no longer matches, so
-    # there is no computable expiry (unknown, advisory) until re-review.
+    # Expiry survives edits: content changed after the review, so the latest
+    # event no longer matches and the doc reports stale until re-review,
+    # never unknown.
     repo = _repo(tmp_path)
     _concept(
         isolated_state,
@@ -1077,7 +1125,7 @@ def test_review_event_hash_mismatch_reports_unknown(
         body="# Note\nroutertoken",
     )
     index_bundle(isolated_state)
-    record_review_event(
+    _record_linked_review(
         isolated_state,
         target="router.md",
         content_hash=_indexed_content_hash(isolated_state, "router.md"),
@@ -1101,16 +1149,18 @@ def test_review_event_hash_mismatch_reports_unknown(
         now=datetime(2026, 7, 1, tzinfo=timezone.utc),
     )
 
-    assert report.time[0].state == "unknown"
-    assert report.overall == "unknown"
+    assert report.time[0].state == "stale"
+    assert report.time[0].stale_after == "2026-01-31T00:00:00+00:00"
+    assert report.overall == "stale"
 
 
-def test_bare_reviewed_at_edit_does_not_move_expiry(
+def test_bare_reviewed_at_edit_without_event_stays_unknown(
     tmp_path: Path,
     isolated_state: Path,
 ) -> None:
-    # reviewed_at is informational only: editing it without a review event
-    # leaves the doc with no computable expiry instead of extending it.
+    # reviewed_at is informational only and no review event exists: editing it
+    # changes the hash without a review, so the doc has no computable expiry
+    # (unknown, advisory) instead of an extended one.
     repo = _repo(tmp_path)
     _concept(
         isolated_state,
@@ -1140,7 +1190,12 @@ def test_bare_reviewed_at_edit_does_not_move_expiry(
         now=datetime(2026, 7, 1, tzinfo=timezone.utc),
     )
 
-    assert report.time[0].state == "unknown"
+    # No review event exists and the content changed since activation, so no
+    # time finding is emitted; the concept reports unknown via the fallback.
+    assert report.time == ()
+    assert [(item.resource, item.state) for item in report.concepts] == [
+        ("kb:alpha/router", "unknown")
+    ]
     assert report.overall == "unknown"
 
 
@@ -1193,7 +1248,7 @@ def test_stale_after_is_inert_when_window_present(
         body="# Note\nroutertoken",
     )
     index_bundle(isolated_state)
-    record_review_event(
+    _record_linked_review(
         isolated_state,
         target="router.md",
         content_hash=_indexed_content_hash(isolated_state, "router.md"),
@@ -1210,3 +1265,125 @@ def test_stale_after_is_inert_when_window_present(
 
     assert report.time[0].state == "current"
     assert report.time[0].stale_after == "2026-07-01T00:00:00+00:00"
+
+
+def test_forged_future_and_unlinked_review_lines_are_rejected(
+    tmp_path: Path,
+    isolated_state: Path,
+) -> None:
+    # A doc that was never reviewed and changed since activation has no
+    # computable expiry. Forged lines (bad hash, future date, or no linked
+    # approval) must not resurrect one.
+    repo = _repo(tmp_path)
+    ensure_gate_activation(isolated_state, now=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    _concept(
+        isolated_state,
+        "router.md",
+        resource="kb:alpha/router",
+        freshness="tracked",
+        review_every="30d",
+        body="# Note\nroutertoken",
+    )
+    index_bundle(isolated_state)
+    content_hash = _indexed_content_hash(isolated_state, "router.md")
+    reviews = isolated_state / ".eos" / "reviews.jsonl"
+
+    def append_event(payload: dict) -> None:
+        with reviews.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(payload) + "\n")
+
+    valid_event = {
+        "schema_version": 1,
+        "target": "router.md",
+        "content_hash": content_hash,
+        "reviewed_at": "2026-06-01T00:00:00+00:00",
+        "proposal_id": "proposal-1",
+        "session_id": "session-1",
+    }
+    # Malformed hash.
+    append_event({**valid_event, "content_hash": "not-a-hash"})
+    # Future timestamp, otherwise well-formed and approved below.
+    append_event({**valid_event, "reviewed_at": "2999-01-01T00:00:00+00:00"})
+    # Well-formed but no accepted approval links it.
+    append_event(valid_event)
+    assert latest_review_event(
+        isolated_state, "router.md", now=datetime(2026, 7, 1, tzinfo=timezone.utc)
+    ) is None
+    report = audit_freshness(
+        isolated_state,
+        repo,
+        now=datetime(2026, 7, 1, tzinfo=timezone.utc),
+    )
+    assert report.time == ()
+    assert [item.state for item in report.concepts] == ["unknown"]
+
+    # Linking the valid line to an accepted approval makes it count.
+    _record_linked_review(
+        isolated_state,
+        target="router.md",
+        content_hash=content_hash,
+        reviewed_at="2026-06-01T00:00:00+00:00",
+    )
+    assert latest_review_event(
+        isolated_state, "router.md", now=datetime(2026, 7, 1, tzinfo=timezone.utc)
+    ) == (datetime(2026, 6, 1, tzinfo=timezone.utc), content_hash)
+    current = audit_freshness(
+        isolated_state,
+        repo,
+        now=datetime(2026, 6, 15, tzinfo=timezone.utc),
+    )
+    assert current.time[0].state == "current"
+
+
+def test_missing_gate_fails_closed(tmp_path: Path, isolated_state: Path) -> None:
+    repo = _repo(tmp_path)
+    _concept(isolated_state, "a.md", resource="kb:alpha/a")
+    index_bundle(isolated_state)
+    (isolated_state / ".eos" / "freshness-gate.json").unlink()
+
+    with pytest.raises(FreshnessValidationError) as raised:
+        audit_freshness(isolated_state, repo)
+    assert raised.value.code == "gate.missing"
+
+
+def test_corrupt_gate_fails_closed(tmp_path: Path, isolated_state: Path) -> None:
+    repo = _repo(tmp_path)
+    _concept(isolated_state, "a.md", resource="kb:alpha/a")
+    index_bundle(isolated_state)
+    (isolated_state / ".eos" / "freshness-gate.json").write_text("{truncated", encoding="utf-8")
+
+    with pytest.raises(FreshnessValidationError) as raised:
+        audit_freshness(isolated_state, repo)
+    assert raised.value.code == "gate.corrupt"
+    with pytest.raises(GateError) as gate_raised:
+        require_gate(isolated_state)
+    assert gate_raised.value.code == "gate.corrupt"
+
+
+def test_wrong_version_gate_fails_closed(tmp_path: Path, isolated_state: Path) -> None:
+    repo = _repo(tmp_path)
+    _concept(isolated_state, "a.md", resource="kb:alpha/a")
+    index_bundle(isolated_state)
+    gate_path = isolated_state / ".eos" / "freshness-gate.json"
+    gate_path.write_text(
+        json.dumps({"schema_version": 999, "activated_at": "2026-01-01T00:00:00+00:00", "docs": {}}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(FreshnessValidationError) as raised:
+        audit_freshness(isolated_state, repo)
+    assert raised.value.code == "gate.version_mismatch"
+
+
+def test_validate_is_read_only_and_refuses_without_gate(
+    tmp_path: Path, isolated_state: Path
+) -> None:
+    _concept(isolated_state, "a.md", resource="kb:alpha/a")
+    index_bundle(isolated_state)
+    (isolated_state / ".eos" / "freshness-gate.json").unlink()
+
+    report = validate_bundle(isolated_state)
+
+    assert ("gate.missing", "freshness-gate.json") in {(error.code, error.relative_file) for error in report.errors}
+    # No silent re-activation: the gate file is still gone.
+    assert not (isolated_state / ".eos" / "freshness-gate.json").exists()

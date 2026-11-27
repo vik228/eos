@@ -15,6 +15,9 @@
     "sources": {"type": "array", "items": {"type": "string", "pattern": "\\S"}},
     "status": {"enum": ["draft", "stable", "deprecated"]},
     "stale_after": {"type": "string", "pattern": "\\S"},
+    "freshness": {"enum": ["tracked", "historical"]},
+    "review_every": {"type": "string", "pattern": "^[1-9]\\d*d$"},
+    "reviewed_at": {"type": "string", "pattern": "\\S"},
     "eos": {"$ref": "#/$defs/eos"}
   },
   "not": {"required": ["authoritative"]},

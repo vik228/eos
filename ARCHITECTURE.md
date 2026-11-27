@@ -51,8 +51,12 @@ EOS knowledge roots are [Open Knowledge Format (OKF) v0.2](https://github.com/Go
 Markdown bundles. `index.md` is the canonical OKF router, with `00-index.md`
 retained as a compact compatibility router during migration. Concepts use
 standard OKF fields where relevant, including `type`, `title`, `description`,
-`resource`, `tags`, `generated`, `verified`, `sources`, `status`, and
-`stale_after`.
+`resource`, `tags`, `generated`, `verified`, `sources`, and `status`.
+EOS adds per-doc freshness fields (`freshness: tracked | historical`,
+`review_every`, `reviewed_at`): `stale_after` is still parsed for reference
+but is inert and never drives expiry. Tracked docs expire from their review
+window counted from the latest hash-bound review event; expiry blocks only
+the session that used the doc, while contradictions and drift stay KB-wide.
 
 EOS-specific metadata is nested under the `eos` namespace so it does not
 collide with current or future OKF fields. Only metadata needed by a concept is

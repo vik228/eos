@@ -91,7 +91,7 @@ compose_prompt() {
 Review the changes in git range $review inside the worktree $wt against the brief at $brief.
 Work only in that worktree; do not modify any file; never push. Read the brief fully, then every file the range touches.
 Report, in this order: (1) requirements from the brief that the diff does NOT meet, each with file:line evidence; (2) correctness bugs (a concrete input -> wrong behaviour), most severe first; (3) security or isolation gaps; (4) tests that are missing or weakened; (5) anything that contradicts AGENTS.md or .claude/CLAUDE.md. Then a one-paragraph verdict: merge, fix-then-merge, or redo. No praise, no summary of what the diff does. Print the report as the final message.
-Any file you write under logs/ must start with valid Log frontmatter (title, type Log, date, status, stale_after).
+Any file you write under logs/ must start with valid Log frontmatter (title, type Log, date, status, freshness: historical).
 EOF
   else
     cat <<EOF

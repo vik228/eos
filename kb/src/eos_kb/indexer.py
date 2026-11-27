@@ -15,7 +15,7 @@ from typing import Iterable, Protocol
 from urllib.parse import urlsplit
 
 from .frontmatter import parse_concept
-from .gate import ensure_gate_activation, is_new_doc
+from .gate import GateError, ensure_gate_activation, is_new_doc, require_gate
 from .model import Concept, Status
 from .schema import SchemaValidationError
 from .storage import (
@@ -859,6 +859,7 @@ def index_bundle(
     source_root: Path | None = None,
     coverage_rules: Iterable[CoverageContract] = (),
     state_path: Path | None = None,
+    activate_gate: bool = True,
 ) -> IndexReport:
     del rebuild
     root = root.expanduser().resolve()
@@ -957,10 +958,12 @@ def index_bundle(
                 allowed_destinations=allowed_destinations,
             )
             raise
-    # Activating the gate here (as validate and promote also do) snapshots
-    # the pre-existing docs the first time any write-path command runs after
-    # the upgrade, so later docs are reliably new. Never updated afterwards.
-    ensure_gate_activation(root)
+    # Activating the gate here snapshots the pre-existing docs the first time
+    # a write-path command runs after the upgrade, so later docs are reliably
+    # new. Never updated afterwards. Promote shadow copies opt out: the
+    # boundary belongs to the live KB, not a temp dir.
+    if activate_gate:
+        ensure_gate_activation(root)
     return IndexReport(database, manifest, [], sqlite3.connect(database))
 
 
@@ -1015,7 +1018,13 @@ def validate_bundle(
     current_manifest, manifest_error = _load_manifest(manifest_path)
     connection, database_error = _open_existing_database(database)
     errors.extend(error for error in (manifest_error, database_error) if error)
-    gate = ensure_gate_activation(root)
+    # Read-only: validate never writes. A missing, corrupt, or version-skewed
+    # gate fails the check instead of silently re-activating.
+    try:
+        gate: dict | None = require_gate(root)
+    except GateError as exc:
+        errors.append(IndexError(exc.code, "freshness-gate.json", str(exc)))
+        gate = None
     errors.extend(freshness_contract_errors(concepts, gate))
 
     if (

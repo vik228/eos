@@ -30,6 +30,12 @@
   freshness and coverage auditing, proposal governance, recoverable sessions,
   bug investigation gates, migration tooling, agent policy adapters, wrappers,
   scheduled audits, and adherence benchmarks.
+- Redesigned the KB freshness gate: per-doc `freshness: tracked | historical`
+  with `review_every` windows, a durable `.eos/freshness-gate.json` new-doc
+  boundary that fails closed, hash-bound review events written only by
+  `kb promote`, and session-scoped expiry (an expired tracked doc blocks only
+  the session that used it; contradictions and drift stay KB-wide).
+  `stale_after` is inert and `reviewed_at` is informational only.
 - Added an optional TypeSafe Jev decision layer for retrieval: opt-in `--jev`
   flags on `kb search` and `kb context`, a standalone `scripts/eos-jev-filter`,
   work/personal API key routing, and graceful BM25 fallback.

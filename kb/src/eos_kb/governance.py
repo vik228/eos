@@ -18,7 +18,7 @@ import yaml
 from .model import ProposalState
 from .normalize import normalized_content_hash
 from .frontmatter import parse_concept, parse_concept_text
-from .gate import ensure_gate_activation, format_review_event, reviews_path
+from .gate import GateError, format_review_event, require_gate, reviews_path
 from .indexer import CoverageContract, freshness_contract_errors, index_bundle, valid_manifest
 from .storage import (
     begin_transaction,
@@ -107,6 +107,17 @@ def _safe_target(root: Path, target: str) -> Path:
     if path != root.resolve() and root.resolve() not in path.parents:
         raise GovernanceError("governance.target_invalid", "Target must remain inside the knowledge bundle.")
     return path
+
+
+def _normalize_target(root: Path, target: str) -> str:
+    """Repo-relative posix path for a target, with symlinks resolved.
+
+    Raw proposal targets may be absolute or prefixed with ./, which would
+    break both the new-doc check and the review-event binding (the audit
+    matches events against indexed relative paths). Normalizing here keeps
+    all three consistent.
+    """
+    return _safe_target(root, target).relative_to(root.resolve()).as_posix()
 
 
 def _session(root: Path, session_id: str, *, lifecycle: bool = False) -> dict[str, Any]:
@@ -286,15 +297,16 @@ def promote_proposal(
     coverage_rules: Iterable[CoverageContract] = (),
 ) -> Proposal:
     _session(root, session_id, lifecycle=True)
-    # Ensure the gate boundary before taking locks: ensure_gate_activation
-    # takes the .eos writer lock, which promote already holds below (a second
-    # flock on the same file from this process would deadlock).
-    gate = ensure_gate_activation(root)
+    try:
+        gate = require_gate(root)
+    except GateError as exc:
+        raise GovernanceError(exc.code, str(exc)) from exc
     with writer_lock(_eos(root)), writer_lock(state_directory(root)):
         proposal = load_proposal(root, proposal_id)
         if proposal.state is not ProposalState.ACCEPTED:
             raise GovernanceError("governance.proposal_not_accepted", "Only accepted proposals may be promoted.")
         _approved(root, proposal)
+        normalized = _normalize_target(root, proposal.target)
         target = _safe_target(root, proposal.target)
         live = normalized_content_hash(target.read_text(encoding="utf-8")) if target.is_file() else None
         if live != proposal.base_target_hash:
@@ -302,7 +314,7 @@ def promote_proposal(
         if normalized_content_hash(proposal.result_content) != proposal.proposed_result_hash:
             raise GovernanceError("governance.result_hash_mismatch", "Proposal result no longer matches its recorded hash.")
         try:
-            parse_concept_text(proposal.result_content, proposal.target)
+            parse_concept_text(proposal.result_content, normalized)
         except Exception as exc:
             raise GovernanceError("governance.result_invalid", "Promotion result is not a valid knowledge concept.") from exc
         updated = Proposal(**{**proposal.__dict__, "state": ProposalState.PROMOTED})
@@ -315,6 +327,7 @@ def promote_proposal(
             updated,
             proposal_path,
             gate=gate,
+            normalized=normalized,
             reviewed_at=reviewed_at,
             source_root=source_root,
             coverage_rules=tuple(coverage_rules),
@@ -331,6 +344,7 @@ def _promotion_files(
     proposal_path: Path,
     *,
     gate: dict[str, Any] | None,
+    normalized: str,
     reviewed_at: str,
     source_root: Path | None,
     coverage_rules: tuple[CoverageContract, ...],
@@ -352,6 +366,7 @@ def _promotion_files(
             state_path=Path(directory) / "state",
             source_root=source_root,
             coverage_rules=coverage_rules,
+            activate_gate=False,
         )
         try:
             if indexed.errors:
@@ -374,7 +389,7 @@ def _promotion_files(
             # record, not the stored index: the index is rebuilt by this very
             # promotion, so only the activation snapshot can tell new docs
             # from existing ones. Without a boundary record nothing is new.
-            candidate = parse_concept_text(proposal.result_content, proposal.target)
+            candidate = parse_concept_text(proposal.result_content, normalized)
             contract_errors = freshness_contract_errors([candidate], gate)
             if contract_errors:
                 details = "; ".join(
@@ -407,7 +422,7 @@ def _promotion_files(
                 state_directory(root) / "manifest.json": manifest_path.read_bytes(),
                 reviews_log: existing_reviews
                 + format_review_event(
-                    target=proposal.target,
+                    target=normalized,
                     content_hash=normalized_content_hash(proposal.result_content),
                     proposal_id=proposal.proposal_id,
                     session_id=proposal.session_id,
@@ -427,7 +442,7 @@ def _promotion_files(
 def deprecate_proposal(root: Path, target: str, *, proposal_id: str, session_id: str) -> Proposal:
     _session(root, session_id, lifecycle=True)
     proposal = load_proposal(root, proposal_id)
-    if proposal.target != target:
+    if _normalize_target(root, proposal.target) != _normalize_target(root, target):
         raise GovernanceError("governance.target_mismatch", "Proposal target does not match the requested concept.")
     if "status: deprecated" not in proposal.result_content and "status: 'deprecated'" not in proposal.result_content and 'status: "deprecated"' not in proposal.result_content:
         raise GovernanceError("governance.deprecation_result_invalid", "Deprecation result must mark the concept deprecated.")
@@ -438,6 +453,7 @@ def review_direct_change(root: Path, target: str, *, actor: str, session_id: str
     _session(root, session_id, lifecycle=True)
     if decision != "accepted":
         raise GovernanceError("governance.direct_change_rejected", "Direct changes require explicit acceptance.")
+    normalized = _normalize_target(root, target)
     path = _safe_target(root, target)
     if not path.is_file():
         raise GovernanceError("governance.target_missing", "Direct-change target does not exist.")
@@ -448,17 +464,13 @@ def review_direct_change(root: Path, target: str, *, actor: str, session_id: str
     if concept.generated:
         raise GovernanceError("governance.generated_target", "Generated routers do not require direct-change approval.")
     current_hash = normalized_content_hash(path.read_text(encoding="utf-8"))
-    record = {"schema_version": 1, "proposal_id": "direct-change:" + target, "actor": actor, "timestamp": datetime.now(timezone.utc).isoformat(), "proposal_hash": None, "base_target_hash": current_hash, "proposed_result_hash": current_hash, "decision": decision, "session_id": session_id}
+    # A direct-change approval records who accepted the current content, but
+    # it deliberately writes no review event: a self-supplied --actor must
+    # not reset expiry outside the propose, review, promote flow.
+    record = {"schema_version": 1, "proposal_id": "direct-change:" + normalized, "actor": actor, "timestamp": datetime.now(timezone.utc).isoformat(), "proposal_hash": None, "base_target_hash": current_hash, "proposed_result_hash": current_hash, "decision": decision, "session_id": session_id}
     log = _eos(root) / "approvals.jsonl"
     with writer_lock(_eos(root)):
-        # A direct-change approval reviews the exact current content, so it
-        # counts as a review event bound to that hash, like a promote does.
-        reviews_log = reviews_path(root)
-        try:
-            existing_reviews = reviews_log.read_bytes() if reviews_log.is_file() else b""
-        except OSError:
-            existing_reviews = b""
-        _transaction(root, {log: ((log.read_text() if log.exists() else "") + json.dumps(record, sort_keys=True) + "\n").encode(), reviews_log: existing_reviews + format_review_event(target=target, content_hash=current_hash, proposal_id="direct-change:" + target, session_id=session_id, reviewed_at=record["timestamp"])})
+        _transaction(root, {log: ((log.read_text() if log.exists() else "") + json.dumps(record, sort_keys=True) + "\n").encode()})
     return record
 
 

@@ -531,6 +531,14 @@ def test_concept_schema_uses_non_blank_strings_where_runtime_does() -> None:
     assert concept_schema["$defs"]["claim"]["properties"]["id"] == non_blank
 
 
+def test_concept_schema_declares_freshness_contract_fields() -> None:
+    concept_schema = load_schema("concept", version=1, schema_dir=SCHEMA_DIR)
+
+    assert concept_schema["properties"]["freshness"] == {"enum": ["tracked", "historical"]}
+    assert concept_schema["properties"]["review_every"] == {"type": "string", "pattern": "^[1-9]\\d*d$"}
+    assert concept_schema["properties"]["reviewed_at"] == {"type": "string", "pattern": "\\S"}
+
+
 def test_freshness_contract_fields_parse_and_reject_bad_values() -> None:
     concept = parse_concept_text(
         """---
