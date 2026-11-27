@@ -7,7 +7,7 @@ description: Mandatory for any open-ended discussion, planning, design, roadmap,
 
 The conversation is not the memory. A working document is. Every rule below exists to keep that document true.
 
-1. Open a session doc in a durable location outside the code repository before the first question, and state its path to the user. It holds the question register, the return stack, and the learnings ledger. A session-scoped scratchpad is not durable. When the doc lives in the KB, put the working register under `logs/` and use the full five-field Log frontmatter the capture schema requires: `title`, `type: Log`, `date`, `status`, and `stale_after` (three months after `date`); `status` must be one of `draft`, `stable`, or `deprecated`, never `working`, so the register passes `kb promote` validation; never bypass the KB proposal flow to create a stable concept.
+1. Open a session doc in a durable location outside the code repository before the first question, and state its path to the user. It holds the question register, the return stack, and the learnings ledger. A session-scoped scratchpad is not durable. When the doc lives in the KB, put the working register under `logs/` and use the full five-field Log frontmatter the capture schema requires: `title`, `type: Log`, `date`, `status`, and `stale_after` (three months after `date`, QUOTE it as a YAML string because an unquoted date fails `kb promote` validation); `status` must be one of `draft`, `stable`, or `deprecated`, never `working`, so the register passes `kb promote` validation; never bypass the KB proposal flow to create a stable concept.
 2. Ask one question at a time. Record the answer and its implication before asking the next.
 3. Give every question an id and a state: `pending`, `answered`, `answered-by-branch`, `reworded`, `moot`, or `blocked`. Emergent questions get ids in the same scheme; never run two numbering schemes in one doc.
 4. When the discussion departs from a question, push one line onto the return stack: where we were, and why we left. Branching is normal and usually more valuable than the question that spawned it, so make it cheap rather than discouraged.
@@ -22,15 +22,15 @@ This skill is expected to improve with use. Discussion technique is learned, not
 
 9. When a technique demonstrably helps or fails in a real discussion, record it in the session doc under "skill feedback": what happened, and what rule would have prevented or produced it.
 10. Propose the amendment through the KB proposal flow and obtain explicit approval before editing this file. Never edit it silently.
-11. Edit the session doc with the Edit tool, which errors on mismatch, or assert replacement counts for scripted edits; then re-read the register after a batch of edits. A silent no-op edit loses register entries without warning.
 
 ## Conduct
 
-12. Propose closing a branch and wait for the user's confirmation before popping the return stack. A "settled" heading inside a branch is not confirmation.
-13. Keep turns short and conversational. One idea, then one question. Prose, not tables. Heavy structure belongs in the document, never in the reply. If a turn needs headings to be followed, it is too long.
-14. Make branching audible. Name the departure and the reason on the way out, name the return on the way back. The other person should never have to ask which question is live.
-15. Enable the other person to think in a direction instead of reaching the conclusion for them. Lay out the fork and let them choose the branch.
-16. Never form a hypothesis and validate it yourself in the same turn. If the answer looks clear, surface the choice instead of closing it.
-17. Lead toward a design conversationally. Do not present a finished design and ask for approval, because that turns a discussion into a review.
-18. Lead with a concrete case before the abstract choice. For a question about a guarantee, a boundary or a design option, first show one realistic case that works and one that fails, in simple language, then name the options. Introduce one new idea per turn; when a new flow or topic starts, explain the setup first and confirm it landed before asking for a decision.
-19. When Vikas asks for a reference artifact of an ongoing discussion, keep the notes in the session markdown while it runs and build the artifact only at close or when asked. Format it summary-first, then a deep dive with examples. Items he marks as business calls go in as pointers, never as decisions.
+11. Propose closing a branch and wait for the user's confirmation before popping the return stack. A "settled" heading inside a branch is not confirmation.
+12. Keep turns short and conversational. One idea, then one question. Prose, not tables. Heavy structure belongs in the document, never in the reply. If a turn needs headings to be followed, it is too long.
+13. Make branching audible. Name the departure and the reason on the way out, name the return on the way back. The other person should never have to ask which question is live.
+14. Enable the other person to think in a direction instead of reaching the conclusion for them. Lay out the fork and let them choose the branch.
+15. Never form a hypothesis and validate it yourself in the same turn. If the answer looks clear, surface the choice instead of closing it.
+16. Lead toward a design conversationally. Do not present a finished design and ask for approval, because that turns a discussion into a review.
+17. Lead with a concrete case before the abstract choice. For a question about a guarantee, a boundary or a design option, first show one realistic case that works and one that fails, in simple language, then name the options. Introduce one new idea per turn; when a new flow or topic starts, explain the setup first and confirm it landed before asking for a decision.
+18. When the user asks for a reference artifact of an ongoing discussion, keep the notes in the session markdown while it runs and build the artifact only at close or when asked. Format it summary-first, then a deep dive with examples. Items the user marks as business calls go in as pointers, never as decisions.
+19. Edit the session doc with the Edit tool, which errors on mismatch, or assert replacement counts for scripted edits; then re-read the register after a batch of edits. A silent no-op edit loses register entries without warning.
