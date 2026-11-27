@@ -121,9 +121,18 @@ class _WsClient:
         self.session = _SessionMsg()
         self.stdin_channel = _StdinChannel()
 
+class _KernelClient:
+    def __init__(self, state_dir):
+        self.state_dir = state_dir
+
+    def interrupt(self):
+        with open(os.path.join(self.state_dir, "interrupts"), "a") as fh:
+            fh.write("interrupt\n")
+
 class ColabRuntime:
     def __init__(self, url, token, session_name=None, history=None):
         self.colab_request_hook = None
+        self.kernel_client = _KernelClient(os.environ["STUB_STATE"])
 
     def execute_code(self, code, allow_stdin=False, timeout=None):
         assert "drive.mount" in code, "expected drive.mount code"
@@ -177,6 +186,8 @@ set -e
 [[ "$code" == 1 ]] || fail "timeout exited $code, want 1: $out"
 [[ "$out" == *"not granted in time"* ]] || fail "no timeout message: $out"
 [[ ! -f "$STUB_STATE/stdin-reply" ]] || fail "reply sent despite timeout"
+[[ -f "$STUB_STATE/interrupts" ]] || fail "kernel not interrupted on timeout"
+rm -f "$STUB_STATE/stdin-reply" "$STUB_STATE/interrupts"
 
 # 4. unreachable credentials endpoint.
 printf 'raise' >"$STUB_STATE/creds-mode"
