@@ -197,6 +197,33 @@ def _parse_claude_stream_events(log_path: Path, max_entries: int = 40) -> tuple[
     return entries[-max_entries:], final_result
 
 
+def _compose_remote_prompt(user_prompt: str, handoff_path: Path, *, is_followup: bool = False) -> str:
+    header = "User reply to your previous turn:" if is_followup else "Task:"
+    contract = (
+        f"\n\n[Remote Session Handoff Contract]\n"
+        f"You are running in a remote session monitored asynchronously by the user via MCP.\n"
+        f"- Before ending this turn, ALWAYS write a JSON file at `{handoff_path}`.\n"
+        f"- If you have ANY doubt, blocker, or decision that needs the user's input, DO NOT guess silently. "
+        f"Write `{handoff_path}` with:\n"
+        f'  {{"state": "needs_input", "summary": "<progress so far>", "questions": ["<clear question>"], "next_step": "<what you will do after reply>"}}\n'
+        f"  and end your turn so the user can reply and resume this exact session.\n"
+        f"- If the task is complete, write `{handoff_path}` with:\n"
+        f'  {{"state": "completed", "summary": "<final outcome>", "questions": [], "next_step": ""}}\n'
+    )
+    return f"{header}\n{user_prompt}{contract}"
+
+
+def _read_handoff(run_dir: Path) -> dict[str, Any] | None:
+    path = run_dir / "handoff.json"
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def _sync_live_state(run_dir: Path) -> dict[str, Any]:
     meta = _read_meta(run_dir)
     if meta.get("status") == "running":
@@ -207,7 +234,13 @@ def _sync_live_state(run_dir: Path) -> dict[str, Any]:
             except ValueError:
                 code = -1
             meta["exit_code"] = code
-            meta["status"] = "completed" if code == 0 else "failed"
+            handoff = _read_handoff(run_dir)
+            if code == 0 and handoff and (
+                str(handoff.get("state") or "").lower() == "needs_input" or bool(handoff.get("questions"))
+            ):
+                meta["status"] = "needs_input"
+            else:
+                meta["status"] = "completed" if code == 0 else "failed"
             meta["ended_at"] = meta.get("ended_at") or _now_iso()
             _write_meta(run_dir, meta)
         elif not _pid_alive(meta.get("pid")):
@@ -247,6 +280,8 @@ def start_remote_agent(
     run_dir = _runs_root(profile) / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
 
+    handoff_path = run_dir / "handoff.json"
+    full_prompt = _compose_remote_prompt(prompt_clean, handoff_path, is_followup=False)
     if command_override is not None:
         cmd, extra_env, resume_cmd = command_override, {}, f"{agent_clean} --resume {session_id}"
     else:
@@ -255,7 +290,7 @@ def start_remote_agent(
             agent=agent_clean,
             name=name_clean,
             session_id=session_id,
-            prompt=prompt_clean,
+            prompt=full_prompt,
             resume=False,
             permission_mode=permission_mode,
         )
@@ -326,6 +361,12 @@ def followup_remote_agent(
     if meta.get("status") == "running" and _pid_alive(meta.get("pid")):
         raise RemoteAgentError(f"Run '{run_id}' is still running; wait for it to finish or stop it first.")
 
+    handoff_path = run_dir / "handoff.json"
+    if handoff_path.is_file():
+        archived = run_dir / f"handoff-turn-{meta.get('turns', 1)}.json"
+        os.replace(handoff_path, archived)
+
+    full_prompt = _compose_remote_prompt(prompt_clean, handoff_path, is_followup=True)
     if command_override is not None:
         cmd, extra_env = command_override, {}
     else:
@@ -334,7 +375,7 @@ def followup_remote_agent(
             agent="claude",
             name=meta["name"],
             session_id=meta["session_id"],
-            prompt=prompt_clean,
+            prompt=full_prompt,
             resume=True,
         )
 
@@ -377,7 +418,8 @@ def status_remote_agent(profile: str, *, run_id: str) -> dict[str, Any]:
         lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines() if log_path.is_file() else []
         recent = lines[-12:]
         final_result = "\n".join(lines[-20:]).strip() if lines else None
-    return {**meta, "recent_events": recent, "final_result": final_result}
+    handoff = _read_handoff(run_dir)
+    return {**meta, "handoff": handoff, "recent_events": recent, "final_result": final_result}
 
 
 def logs_remote_agent(profile: str, *, run_id: str, tail_lines: int = 40) -> dict[str, Any]:
@@ -443,7 +485,13 @@ def _exec_run(run_dir: Path) -> int:
     (run_dir / "exit_code").write_text(f"{code}\n", encoding="utf-8")
     meta = _read_meta(run_dir)
     if meta.get("status") != "stopped":
-        meta["status"] = "completed" if code == 0 else "failed"
+        handoff = _read_handoff(run_dir)
+        if code == 0 and handoff and (
+            str(handoff.get("state") or "").lower() == "needs_input" or bool(handoff.get("questions"))
+        ):
+            meta["status"] = "needs_input"
+        else:
+            meta["status"] = "completed" if code == 0 else "failed"
     meta["exit_code"] = code
     meta["ended_at"] = _now_iso()
     _write_meta(run_dir, meta)

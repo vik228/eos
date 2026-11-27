@@ -123,3 +123,60 @@ def test_mcp_dispatch_enforces_work_claude_only(tmp_path: Path) -> None:
         )
     res = dispatch_tool(kb, "work", "agent_list", {})
     assert "No remote agent sessions" in res["text"]
+
+
+def test_handoff_needs_input_and_followup_resume(tmp_path: Path) -> None:
+    kb = tmp_path / "kb"
+    kb.mkdir()
+    runs_dir = tmp_path / "remote-agents" / "work"
+    # Fake agent writes handoff.json with state=needs_input into its run_dir
+    script_turn1 = (
+        "import json, pathlib; "
+        f"rd = sorted(pathlib.Path({str(runs_dir)!r}).iterdir())[-1]; "
+        "payload = {'state': 'needs_input', 'summary': 'Found 2 retry queues', "
+        "'questions': ['Should we drain dead-letter queue first?'], 'next_step': 'Run fix script'}; "
+        "(rd / 'handoff.json').write_text(json.dumps(payload))"
+    )
+    meta = start_remote_agent(
+        "work",
+        name="DLQ Debug",
+        prompt="Debug retry queue",
+        cwd="backend",
+        agent="claude",
+        command_override=[sys.executable, "-c", script_turn1],
+    )
+    run_id = meta["run_id"]
+    for _ in range(30):
+        st = status_remote_agent("work", run_id=run_id)
+        if st["status"] != "running":
+            break
+        time.sleep(0.1)
+
+    assert st["status"] == "needs_input"
+    assert st["handoff"]["questions"] == ["Should we drain dead-letter queue first?"]
+
+    mcp_st = dispatch_tool(kb, "work", "agent_status", {"run_id": run_id})
+    assert "Needs Your Input" in mcp_st["text"]
+    assert "Should we drain dead-letter queue first?" in mcp_st["text"]
+
+    # Follow-up archives turn 1 handoff and completes
+    script_turn2 = (
+        "import json, pathlib; "
+        f"rd = pathlib.Path({str(runs_dir / run_id)!r}); "
+        "(rd / 'handoff.json').write_text(json.dumps({'state': 'completed', 'summary': 'Drained DLQ and verified', 'questions': []}))"
+    )
+    followup_remote_agent(
+        "work",
+        run_id=run_id,
+        prompt="Yes, drain DLQ first",
+        command_override=[sys.executable, "-c", script_turn2],
+    )
+    for _ in range(30):
+        st2 = status_remote_agent("work", run_id=run_id)
+        if st2["status"] != "running":
+            break
+        time.sleep(0.1)
+
+    assert st2["status"] == "completed"
+    assert (runs_dir / run_id / "handoff-turn-1.json").is_file()
+    assert st2["handoff"]["summary"] == "Drained DLQ and verified"

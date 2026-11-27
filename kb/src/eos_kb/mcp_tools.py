@@ -483,7 +483,19 @@ def tool_agent_status(kb_root: Path, profile: str, *, run_id: str) -> dict[str, 
         f"- CWD: `{st['cwd']}` | Started: {st['started_at']}",
         f"- Resume locally: `{st['resume_command']}`",
     ]
-    if st.get("final_result"):
+    handoff = st.get("handoff") or {}
+    if handoff:
+        if handoff.get("summary"):
+            lines.extend(["", f"Summary: {handoff['summary']}"])
+        questions = handoff.get("questions") or []
+        if questions:
+            lines.append("")
+            lines.append("**Needs Your Input (reply via `agent_followup`):**")
+            for idx, q in enumerate(questions, 1):
+                lines.append(f"{idx}. {q}")
+        if handoff.get("next_step"):
+            lines.append(f"Next step once you reply: {handoff['next_step']}")
+    elif st.get("final_result"):
         lines.extend(["", "Final Result:", st["final_result"][:3000]])
     elif st.get("recent_events"):
         lines.extend(["", "Recent Activity:"] + [f"- {e}" for e in st["recent_events"][-8:]])
