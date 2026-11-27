@@ -156,6 +156,18 @@ while IFS= read -r pid; do
   kill_forward "$pid" "-L $LOCAL_PORT:127.0.0.1:$REMOTE_PORT"
 done < <(pgrep -f -- "-L $LOCAL_PORT:127.0.0.1:$REMOTE_PORT" || true)
 
+# A dropped forward with a busy remote kernel is the training-killer: the
+# restart below would wipe the running kernel. The forward is dead but SSH
+# is a separate channel, so ask the VM itself (localhost) with the old
+# token. Busy refuses with exit 5; anything inconclusive proceeds as before.
+if [[ -n "${STATE_TOKEN:-}" ]]; then
+  if ssh_run "curl -fsS --max-time 10 'http://127.0.0.1:${STATE_REMOTE_PORT:-$REMOTE_PORT}/api/kernels?token=$STATE_TOKEN' 2>/dev/null" 2>/dev/null \
+    | grep -q '"execution_state"[[:space:]]*:[[:space:]]*"busy"'; then
+    echo "colab-connect: remote kernel is busy, refusing restart (training keeps running)" >&2
+    exit 5
+  fi
+fi
+
 # Restart the remote server so the token is always fresh and known. The
 # bracket pattern keeps pkill from matching its own shell on Linux procps.
 echo "colab: starting remote jupyter (about 30 seconds)..." >&2

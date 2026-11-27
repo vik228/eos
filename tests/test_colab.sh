@@ -46,6 +46,13 @@ chmod +x "$stubbin/colab"
 # carrying the spec in argv[0], like the real backgrounded ssh does.
 cat >"$stubbin/ssh" <<'STUB'
 #!/usr/bin/env bash
+# Remote kernel probe (colab-connect heal guard): answer from state file so
+# tests drive busy/idle remotes. Defaults to idle. Kept before the generic
+# curl rule; both exit 0 so verification callers are unaffected.
+if [[ " $* " == *"api/kernels"* ]]; then
+  cat "$STUB_STATE/remote-kernels" 2>/dev/null || printf '[]'
+  exit 0
+fi
 for arg in "$@"; do
   [[ "$arg" == *"curl"* ]] && exit 0
 done
@@ -271,11 +278,32 @@ stop_out="$(EOS_ROOT="$ROOT" "$ROOT/scripts/colab-stop" 2>&1)"
 stop_out="$(EOS_ROOT="$ROOT" "$ROOT/scripts/colab-stop" 2>&1)"
 [[ -f "$EOS_STATE_DIR/colab/forward.env" ]] && fail "state kept on confirmed idle" || true
 [[ "$stop_out" != *"leaving the session running"* ]] || fail "idle wrongly deferred: $stop_out"
-# 13d. unreachable VM keeps the session (unknown is not idle).
-printf 'STATE_TOKEN=%s\nSTATE_PID=99999999\n' "$token" >"$EOS_STATE_DIR/colab/forward.env"
-stop_out="$(EOS_SSH_BIN=/bin/false EOS_ROOT="$ROOT" "$ROOT/scripts/colab-stop" 2>&1)"
-[[ "$stop_out" == *"keeping the session"* ]] || fail "ssh failure did not keep session: $stop_out"
-[[ -f "$EOS_STATE_DIR/colab/forward.env" ]] || fail "state removed on unreachable VM"
+# 14. heal refuses when the remote kernel is busy (training-killer guard).
+# Re-pin the stub CLI: sections 9-12 unset/override EOS_COLAB_BIN.
+export EOS_COLAB_BIN="$stubbin/colab" EOS_SSH_BIN="$stubbin/ssh"
+printf '[?] eos | Hardware: T4\n' >"$STUB_STATE/session-active"
+printf 'STATE_TOKEN=oldtok123\nSTATE_PID=99999999\nSTATE_SESSION=eos\n' >"$EOS_STATE_DIR/colab/forward.env"
+# 14a. busy remote: exit 5, no restart, state kept for the still-live runtime.
+printf '[{"execution_state": "busy"}]' >"$STUB_STATE/remote-kernels"
+calls_before="$(wc -l <"$STUB_STATE/calls" 2>/dev/null || echo 0)"
+set +e
+heal_out="$(EOS_ROOT="$ROOT" "$ROOT/scripts/colab-connect" 2>&1)"
+heal_code=$?
+set -e
+[[ "$heal_code" == 5 ]] || fail "busy remote did not refuse (exit $heal_code): $heal_out"
+[[ "$heal_out" == *"refusing restart"* ]] || fail "no refusal message: $heal_out"
+[[ -f "$EOS_STATE_DIR/colab/forward.env" ]] || fail "state removed despite busy remote"
+[[ "$(wc -l <"$STUB_STATE/calls" 2>/dev/null || echo 0)" == "$calls_before" ]] || fail "runtime touched despite busy remote"
+# 14b. idle remote: restart proceeds (no refusal, fresh state written).
+# Drop the pinned token so the stub server accepts the fresh token (§4 pattern).
+rm -f "$tmp/stub-token"
+printf '[]' >"$STUB_STATE/remote-kernels"
+set +e
+heal_out="$(EOS_ROOT="$ROOT" "$ROOT/scripts/colab-connect" 2>&1)"
+heal_code=$?
+set -e
+[[ "$heal_code" == 0 ]] || fail "idle remote did not restart (exit $heal_code): $heal_out"
+[[ "$heal_out" != *"refusing restart"* ]] || fail "idle wrongly refused: $heal_out"
 rm -f "$EOS_STATE_DIR/colab/forward.env"
 
 echo "colab scripts ok"

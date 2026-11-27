@@ -1381,6 +1381,9 @@ colab_start_forward_run = function()
           else
             err = "A Colab connect is already running."
           end
+        elseif code == 5 then
+          level = vim.log.levels.WARN
+          err = "Remote kernel is busy: heal refused, training keeps running. Cells run locally until :ColabConnect."
         else
           err = "Colab connect failed (exit " .. code .. "). See :ColabStatus."
         end
@@ -1778,10 +1781,10 @@ colab_heal_link = function()
       colab_healing = false
       return
     end
-    colab_ensure_forward(false, function(info)
+    colab_ensure_forward(false, function(info, err)
       colab_healing = false
       if info == nil then
-        colab_mark_all_local("Colab link lost and reconnect failed. Cells run locally until :ColabConnect.")
+        colab_mark_all_local(err or "Colab link lost and reconnect failed. Cells run locally until :ColabConnect.")
         return
       end
       colab_reinit_remote_buffers(info)
