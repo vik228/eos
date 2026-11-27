@@ -18,6 +18,7 @@ from eos_kb.remote_agents import (
     start_remote_agent,
     status_remote_agent,
     stop_remote_agent,
+    wait_remote_agent,
 )
 
 
@@ -179,3 +180,25 @@ def test_handoff_needs_input_and_followup_resume(tmp_path: Path) -> None:
     assert st2["status"] == "completed"
     assert (runs_dir / run_id / "handoff-turn-1.json").is_file()
     assert st2["handoff"]["summary"] == "Drained DLQ and verified"
+
+
+def test_wait_and_incremental_cursor(tmp_path: Path) -> None:
+    kb = tmp_path / "kb"
+    kb.mkdir()
+    ev1 = json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "Step 1 done"}]}})
+    ev2 = json.dumps({"type": "result", "result": "All done"})
+    cmd = [sys.executable, "-c", f"print({ev1!r}); print({ev2!r})"]
+
+    meta = start_remote_agent("work", name="Cursor Test", prompt="test", cwd="backend", agent="claude", command_override=cmd)
+    first = wait_remote_agent("work", run_id=meta["run_id"], wait_seconds=5)
+    assert first["status"] == "completed"
+    assert len(first["new_events"]) == 2
+
+    # Second wait returns 0 duplicate events
+    second = wait_remote_agent("work", wait_seconds=0)
+    assert second["new_events"] == []
+    assert second["final_result"] == "All done"
+
+    # MCP agent_wait works without run_id
+    mcp_wait = dispatch_tool(kb, "work", "agent_wait", {"wait_seconds": 0})
+    assert "All done" in mcp_wait["text"]

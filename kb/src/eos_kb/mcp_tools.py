@@ -22,6 +22,7 @@ from .remote_agents import (
     start_remote_agent,
     status_remote_agent,
     stop_remote_agent,
+    wait_remote_agent,
 )
 from .retrieval import RetrievalValidationError, context as kb_context_fn, search as kb_search_fn
 
@@ -429,6 +430,43 @@ def tool_kb_brief(
     return {"text": brief.render_markdown().strip(), "brief": brief.as_dict()}
 
 
+def _format_agent_snapshot(st: dict[str, Any], *, events_key: str = "recent_events") -> str:
+    tmux_line = (
+        f"- tmux window: `{st['tmux_window']}` in `{st['tmux_session']}` (`-L {st['tmux_socket']}`)"
+        if st.get("tmux_window")
+        else None
+    )
+    lines = [
+        f"**{st['name']}** (`{st['run_id']}`)",
+        f"- Status: **{st['status']}** | Agent: `{st['agent']}` | Turns: {st.get('turns', 1)}",
+        f"- CWD: `{st['cwd']}` | Resume locally: `{st['resume_command']}`",
+    ]
+    if tmux_line:
+        lines.append(tmux_line)
+    handoff = st.get("handoff") or {}
+    if handoff:
+        if handoff.get("summary"):
+            lines.extend(["", f"Summary: {handoff['summary']}"])
+        questions = handoff.get("questions") or []
+        if questions:
+            lines.append("")
+            lines.append("**Needs Your Input (reply via `agent_followup`):**")
+            for idx, q in enumerate(questions, 1):
+                lines.append(f"{idx}. {q}")
+        if handoff.get("next_step"):
+            lines.append(f"Next step once you reply: {handoff['next_step']}")
+    elif st.get("final_result") and st.get("status") != "running":
+        lines.extend(["", "Final Result:", st["final_result"][:3000]])
+
+    events = st.get(events_key) or []
+    if events and (st.get("status") == "running" or not handoff):
+        label = "New Updates:" if events_key == "new_events" else "Recent Activity:"
+        lines.extend(["", label] + [f"- {e}" for e in events[-15:]])
+    elif st.get("status") == "running" and events_key == "new_events":
+        lines.extend(["", "(Still running - no new output since last check. Call `agent_wait` again to continue.)"])
+    return "\n".join(lines)
+
+
 def tool_agent_start(
     kb_root: Path,
     profile: str,
@@ -439,6 +477,7 @@ def tool_agent_start(
     agent: str = "claude",
     permission_mode: str | None = None,
     tmux_profile: str | None = None,
+    wait_seconds: int = 20,
 ) -> dict[str, Any]:
     try:
         meta = start_remote_agent(
@@ -450,22 +489,10 @@ def tool_agent_start(
             permission_mode=permission_mode,
             tmux_profile=tmux_profile,
         )
+        snapshot = wait_remote_agent(profile, run_id=meta["run_id"], wait_seconds=wait_seconds)
     except RemoteAgentError as exc:
         raise McpToolError(str(exc)) from exc
-    tmux_line = (
-        f"- tmux window: `{meta['tmux_window']}` in session `{meta['tmux_session']}` (socket `-L {meta['tmux_socket']}`)\n"
-        if meta.get("tmux_window")
-        else ""
-    )
-    text = (
-        f"Started {meta['agent']} session **{meta['name']}** (`{meta['run_id']}`)\n"
-        f"- Profile: `{profile}` | CWD: `{meta['cwd']}`\n"
-        f"{tmux_line}"
-        f"- Session ID: `{meta['session_id']}`\n"
-        f"- Resume locally later: `{meta['resume_command']}`\n"
-        f"Use `agent_status` or `agent_logs` with `run_id='{meta['run_id']}'` to monitor progress."
-    )
-    return {"text": text, "run": meta}
+    return {"text": _format_agent_snapshot(snapshot, events_key="new_events"), "run": snapshot}
 
 
 def tool_agent_list(kb_root: Path, profile: str, *, limit: int = 10) -> dict[str, Any]:
@@ -521,15 +548,34 @@ def tool_agent_logs(kb_root: Path, profile: str, *, run_id: str | None = None, t
     }
 
 
-def tool_agent_followup(kb_root: Path, profile: str, *, run_id: str | None = None, prompt: str) -> dict[str, Any]:
+def tool_agent_followup(
+    kb_root: Path,
+    profile: str,
+    *,
+    run_id: str | None = None,
+    prompt: str,
+    wait_seconds: int = 20,
+) -> dict[str, Any]:
     try:
         meta = followup_remote_agent(profile, run_id=run_id, prompt=prompt)
+        snapshot = wait_remote_agent(profile, run_id=meta["run_id"], wait_seconds=wait_seconds)
     except RemoteAgentError as exc:
         raise McpToolError(str(exc)) from exc
-    return {
-        "text": f"Resumed **{meta['name']}** (`{meta['run_id']}`, turn {meta['turns']}). Monitor with `agent_status`.",
-        "run": meta,
-    }
+    return {"text": _format_agent_snapshot(snapshot, events_key="new_events"), "run": snapshot}
+
+
+def tool_agent_wait(
+    kb_root: Path,
+    profile: str,
+    *,
+    run_id: str | None = None,
+    wait_seconds: int = 25,
+) -> dict[str, Any]:
+    try:
+        snapshot = wait_remote_agent(profile, run_id=run_id, wait_seconds=wait_seconds)
+    except RemoteAgentError as exc:
+        raise McpToolError(str(exc)) from exc
+    return {"text": _format_agent_snapshot(snapshot, events_key="new_events"), "run": snapshot}
 
 
 def tool_agent_stop(kb_root: Path, profile: str, *, run_id: str | None = None) -> dict[str, Any]:
@@ -690,6 +736,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 },
                 "permission_mode": {"type": "string", "description": "Optional Claude permission mode override (e.g. plan, auto)."},
                 "tmux_profile": {"type": "string", "description": "Optional EOS tmux workspace profile name (defaults to 'backend' for work, 'research' for personal)."},
+                "wait_seconds": {"type": "integer", "description": "Seconds to wait for immediate response/updates (0-45, default 20).", "default": 20},
             },
             "required": ["name", "prompt", "cwd"],
         },
@@ -727,14 +774,26 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "agent_followup",
-        "description": "Send a follow-up prompt or answer a doubt to resume the active (or specified) remote Claude Code session.",
+        "description": "Send a follow-up prompt or answer a doubt to resume the active (or specified) remote Claude Code session, waiting up to wait_seconds for immediate output.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "run_id": {"type": "string", "description": "Optional run ID (defaults to the active session)."},
                 "prompt": {"type": "string", "description": "Follow-up instruction or answer to the agent's question."},
+                "wait_seconds": {"type": "integer", "description": "Seconds to wait for immediate response/updates (0-45, default 20).", "default": 20},
             },
             "required": ["prompt"],
+        },
+    },
+    {
+        "name": "agent_wait",
+        "description": "Wait up to wait_seconds (max 45) for the active (or specified) remote agent session and stream back ONLY new updates since the last check (plus final result or questions if done).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string", "description": "Optional run ID (defaults to the active session)."},
+                "wait_seconds": {"type": "integer", "description": "Seconds to wait (0-45, default 25).", "default": 25},
+            },
         },
     },
     {
@@ -827,6 +886,7 @@ def dispatch_tool(kb_root: Path, profile: str, name: str, arguments: dict[str, A
             agent=str(args.get("agent") or "claude"),
             permission_mode=args.get("permission_mode"),
             tmux_profile=args.get("tmux_profile"),
+            wait_seconds=int(args.get("wait_seconds", 20)),
         )
     if name == "agent_list":
         return tool_agent_list(kb_root, profile, limit=int(args.get("limit", 10)))
@@ -845,6 +905,14 @@ def dispatch_tool(kb_root: Path, profile: str, name: str, arguments: dict[str, A
             profile,
             run_id=args.get("run_id"),
             prompt=str(args.get("prompt") or ""),
+            wait_seconds=int(args.get("wait_seconds", 20)),
+        )
+    if name == "agent_wait":
+        return tool_agent_wait(
+            kb_root,
+            profile,
+            run_id=args.get("run_id"),
+            wait_seconds=int(args.get("wait_seconds", 25)),
         )
     if name == "agent_stop":
         return tool_agent_stop(kb_root, profile, run_id=args.get("run_id"))

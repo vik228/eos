@@ -155,7 +155,7 @@ def _build_agent_command(
     raise RemoteAgentError(f"Unsupported agent: {agent}")
 
 
-def _parse_claude_stream_events(log_path: Path, max_entries: int = 40) -> tuple[list[str], str | None]:
+def _parse_claude_stream_events(log_path: Path, max_entries: int | None = 40) -> tuple[list[str], str | None]:
     if not log_path.is_file():
         return [], None
     lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -196,7 +196,62 @@ def _parse_claude_stream_events(log_path: Path, max_entries: int = 40) -> tuple[
         elif ev_type == "system" and ev.get("subtype") == "init":
             model = ev.get("model") or ""
             entries.append(f"[init] session={ev.get('session_id', '')} model={model}")
+    if max_entries is None:
+        return entries, final_result
     return entries[-max_entries:], final_result
+
+
+def _read_cursor(run_dir: Path) -> int:
+    path = run_dir / "cursor.txt"
+    if not path.is_file():
+        return 0
+    try:
+        return max(0, int(path.read_text(encoding="utf-8").strip()))
+    except (OSError, ValueError):
+        return 0
+
+
+def _write_cursor(run_dir: Path, offset: int) -> None:
+    (run_dir / "cursor.txt").write_text(f"{max(0, offset)}\n", encoding="utf-8")
+
+
+def wait_remote_agent(
+    profile: str,
+    *,
+    run_id: str | None = None,
+    wait_seconds: int = 20,
+) -> dict[str, Any]:
+    resolved_id = _resolve_run_id(profile, run_id)
+    run_dir = _runs_root(profile) / resolved_id
+    capped_wait = max(0, min(int(wait_seconds), 45))
+    deadline = time.monotonic() + capped_wait
+    meta = _sync_live_state(run_dir)
+    while meta.get("status") == "running" and time.monotonic() < deadline:
+        time.sleep(0.5)
+        meta = _sync_live_state(run_dir)
+
+    log_path = run_dir / "output.log"
+    if meta.get("agent") == "claude":
+        all_events, final_result = _parse_claude_stream_events(log_path, max_entries=None)
+    else:
+        all_events = (
+            log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+            if log_path.is_file()
+            else []
+        )
+        final_result = "\n".join(all_events[-20:]).strip() if all_events else None
+
+    cursor = _read_cursor(run_dir)
+    new_events = all_events[cursor:]
+    _write_cursor(run_dir, len(all_events))
+    handoff = _read_handoff(run_dir)
+    return {
+        **meta,
+        "handoff": handoff,
+        "new_events": new_events[-40:],
+        "total_events": len(all_events),
+        "final_result": final_result,
+    }
 
 
 def _compose_remote_prompt(user_prompt: str, handoff_path: Path, *, is_followup: bool = False) -> str:
