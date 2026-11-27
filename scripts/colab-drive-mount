@@ -1,0 +1,255 @@
+#!/usr/bin/env bash
+# Mount Google Drive inside a Colab runtime without an interactive terminal.
+# Unlike `colab drivemount` (which blocks on /dev/tty for the OAuth grant),
+# this polls the credentials-propagation endpoint, so it works from
+# background jobs and notebook cells: the consent URL is printed as
+# `CONSENT-URL: <uri>` for the caller to surface, then the mount is verified.
+#
+#   colab-drive-mount [--path PATH] [--timeout SECS] [--poll SECS]
+#
+# Exit 0 mounted (or already mounted), 1 mount failed/timeout/denied,
+# 2 usage or session errors. Never prints tokens or credentials.
+set -euo pipefail
+
+ROOT="${EOS_ROOT:-$HOME/personal/eos}"
+SESSION="${EOS_COLAB_SESSION:-eos}"
+MOUNT_PATH="/content/drive"
+TIMEOUT=300
+POLL=5
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --path) MOUNT_PATH="$2"; shift 2 ;;
+    --path=*) MOUNT_PATH="${1#--path=}"; shift ;;
+    --timeout) TIMEOUT="$2"; shift 2 ;;
+    --timeout=*) TIMEOUT="${1#--timeout=}"; shift ;;
+    --poll) POLL="$2"; shift 2 ;;
+    --poll=*) POLL="${1#--poll=}"; shift ;;
+    -h|--help) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -*) echo "colab-drive-mount: unknown option: $1" >&2; exit 2 ;;
+    *) MOUNT_PATH="$1"; shift ;;
+  esac
+done
+
+# Interpreter check: this flow reuses colab_cli's runtime pieces.
+PYBIN=""
+for cand in /usr/local/bin/python3 python3; do
+  if command -v "$cand" >/dev/null 2>&1 && "$cand" -c 'import colab_cli' 2>/dev/null; then
+    PYBIN="$cand"
+    break
+  fi
+done
+[[ -n "$PYBIN" ]] || { echo "colab-drive-mount: no python with colab_cli found (run scripts/setup-colab)." >&2; exit 2; }
+
+export EOS_COLAB_SESSION="$SESSION" EOS_COLAB_MOUNT_PATH="$MOUNT_PATH"
+export EOS_COLAB_MOUNT_TIMEOUT="$TIMEOUT" EOS_COLAB_MOUNT_POLL="$POLL"
+export EOS_COLAB_DRIVE_BIN="${EOS_COLAB_DRIVE_BIN:-$ROOT/scripts/colab-drive}"
+exec "$PYBIN" - <<'PY'
+import json
+import os
+import subprocess
+import sys
+import time
+
+MOUNT_PATH = os.environ["EOS_COLAB_MOUNT_PATH"]
+TIMEOUT = float(os.environ["EOS_COLAB_MOUNT_TIMEOUT"])
+POLL = float(os.environ["EOS_COLAB_MOUNT_POLL"])
+DRIVE_BIN = os.environ["EOS_COLAB_DRIVE_BIN"]
+
+
+def drive_status():
+    """Ask the existing status checker; True/False/None(error)."""
+    try:
+        p = subprocess.run(
+            [DRIVE_BIN, "status"], capture_output=True, text=True, timeout=30
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if p.returncode == 0:
+        return True
+    if p.returncode == 1:
+        return False
+    return None
+
+
+def main():
+    from colab_cli.auth import get_credentials
+    from colab_cli.common import state
+    from colab_cli.runtime import ColabRuntime
+    from colab_cli.utils import get_status_code
+
+    name = state.resolve_session(os.environ.get("EOS_COLAB_SESSION") or None)
+    print(f"colab-drive-mount: session '{name}', checking current mount...", flush=True)
+    if drive_status() is True:
+        print(f"colab-drive-mount: Drive already mounted at {MOUNT_PATH}")
+        return 0
+
+    deadline = time.time() + TIMEOUT
+    announced = set()
+
+    def poll_hook(deserialize_msg, wsclient):
+        content = deserialize_msg.get("content", {})
+        if content.get("request", {}).get("authType") != "dfs_ephemeral":
+            return False
+        msg_id = deserialize_msg.get("metadata", {}).get("colab_msg_id")
+        s = state.get_session(name)
+        url = f"{state.client.colab_domain}/tun/m/credentials-propagation/{s.endpoint}"
+        params = {
+            "authuser": "0",
+            "authtype": "dfs_ephemeral",
+            "version": "2",
+            "dryrun": "true",
+            "propagate": "true",
+            "record": "false",
+        }
+        try:
+            creds = get_credentials(
+                state.client_oauth_config, provider=state.auth_provider
+            )
+        except Exception:
+            print(
+                "colab-drive-mount: Google auth unavailable; "
+                "run `colab auth` once from a terminal, then retry.",
+                flush=True,
+            )
+            return False
+
+        def get_token():
+            try:
+                resp = creds.request("GET", url, params=dict(params))
+            except Exception:
+                return None
+            if get_status_code(resp) != 200:
+                return None
+            try:
+                return json.loads(resp.text.split("\n", 1)[-1]).get("token")
+            except (ValueError, AttributeError):
+                return None
+
+        def attempt_propagate(tok):
+            """One propagation attempt: returns (outcome, data).
+
+            outcome is "ok" (propagated), "denied" (grant needed) or
+            "error" (transport/HTTP failure). Never raises.
+            """
+            try:
+                resp = creds.request(
+                    "POST",
+                    url,
+                    params=dict(params, dryrun="false"),
+                    headers={"x-goog-colab-token": tok},
+                    files={"file_id": (None, "empty.ipynb")},
+                )
+            except Exception:
+                return "error", None
+            if get_status_code(resp) != 200:
+                return "error", None
+            try:
+                data = json.loads(resp.text.split("\n", 1)[-1])
+            except (ValueError, AttributeError):
+                return "error", None
+            if isinstance(data, dict) and data.get("success"):
+                return "ok", data
+            return "denied", data
+
+        token = get_token()
+        if not token:
+            print(
+                "colab-drive-mount: credentials endpoint unreachable; "
+                "check network and `colab auth`.",
+                flush=True,
+            )
+            return False
+
+        outcome, data = attempt_propagate(token)
+        if outcome == "error":
+            print(
+                "colab-drive-mount: credential propagation failed; "
+                "retry, or mount once from a terminal with :ColabDrive.",
+                flush=True,
+            )
+            return False
+        if outcome == "denied":
+            uri = (data or {}).get("unauthorized_redirect_uri", "")
+            if not uri:
+                print(
+                    "colab-drive-mount: unexpected authorization response "
+                    "(no grant URL); retry, or mount once from a terminal "
+                    "with :ColabDrive.",
+                    flush=True,
+                )
+                return False
+            if uri not in announced:
+                announced.add(uri)
+                print(f"CONSENT-URL: {uri}", flush=True)
+                if os.environ.get("EOS_COLAB_NO_OPEN") != "1":
+                    try:
+                        import shutil
+                        import subprocess as sp
+
+                        opener = shutil.which("open") or shutil.which("xdg-open")
+                        if opener:
+                            sp.Popen(
+                                [opener, uri],
+                                stdout=sp.DEVNULL,
+                                stderr=sp.DEVNULL,
+                            )
+                    except Exception:
+                        pass
+                print(
+                    "colab-drive-mount: grant Drive access in the browser; "
+                    f"waiting up to {int(TIMEOUT)}s.",
+                    flush=True,
+                )
+            outcome = None
+            while outcome != "ok" and time.time() < deadline:
+                time.sleep(POLL)
+                outcome, data = attempt_propagate(token)
+            if outcome != "ok":
+                print(
+                    "colab-drive-mount: consent not granted in time; "
+                    "grant access at the URL above and retry.",
+                    flush=True,
+                )
+                return False
+            if isinstance(data, dict):
+                token = data.get("token", token)
+        print(
+            "colab-drive-mount: credentials propagated; resuming mount...",
+            flush=True,
+        )
+        reply = wsclient.session.msg(
+            "input_reply",
+            {"value": {"type": "colab_reply", "colab_msg_id": msg_id}},
+        )
+        if "header" in deserialize_msg:
+            reply["parent_header"] = deserialize_msg["header"]
+        wsclient.stdin_channel.send(reply)
+        return True
+
+    s = state.get_session(name)
+    runtime = ColabRuntime(s.url, s.token, session_name=s.name, history=state.history)
+    runtime.colab_request_hook = poll_hook
+    print("colab-drive-mount: executing mount code on the VM...", flush=True)
+    try:
+        code = f"from google.colab import drive\ndrive.mount('{MOUNT_PATH}')"
+        runtime.execute_code(code, allow_stdin=True, timeout=TIMEOUT + 120)
+        print("colab-drive-mount: mount code finished.", flush=True)
+    finally:
+        try:
+            runtime.stop()
+        except Exception:
+            pass
+
+    if drive_status() is True:
+        print(f"colab-drive-mount: Drive mounted at {MOUNT_PATH}")
+        return 0
+    print(
+        "colab-drive-mount: mount not visible after the flow; "
+        "retry, or mount once from a terminal with :ColabDrive.",
+        flush=True,
+    )
+    return 1
+
+
+sys.exit(main())
+PY

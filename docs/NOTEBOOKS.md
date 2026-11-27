@@ -137,9 +137,12 @@ an empty code cell; fill in the data URL and press `:ColabData`.
 
 Do not mount Drive through a `!`-prefixed cell (`!colab drivemount` or
 `drive.mount()` behind `!`): there is no TTY for the OAuth grant, so it fails
-silently with exit 0. Run `:ColabDrive` once per runtime instead (terminal
-split with browser consent, then verified), and use
-`/content/drive/MyDrive` from cells.
+silently with exit 0. Run `:ColabDriveMount` instead: it prints the browser
+consent link as a notification, polls for the grant (no terminal needed),
+then verifies. `:ColabDrive` keeps the terminal-based flow as a fallback.
+Direct `from google.colab import drive; drive.mount(...)` in a cell still
+needs the Colab web frontend, so cells use `/content/drive/MyDrive` after
+either mount command. Already-mounted runtimes report instantly.
 
 ## Colab GPU Kernels
 

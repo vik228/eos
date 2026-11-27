@@ -1715,6 +1715,38 @@ local function colab_drive_mount()
     vim.notify("Connect first: :ColabConnect, then :ColabDrive.", vim.log.levels.WARN)
     return
   end
+  -- Poll-based mount needs no terminal: the consent URL is notified for the
+  -- browser grant while the mount proceeds in the background.
+  local notified_url = false
+  vim.system({ colab_script("colab-drive-mount") }, {
+    text = true,
+    stdout = function(_, data)
+      if data and not notified_url then
+        local url = data:match("CONSENT%-URL:%s*(%S+)")
+        if url then
+          notified_url = true
+          vim.schedule(function()
+            vim.notify("Grant Drive access in the browser, then the mount resumes: " .. url, vim.log.levels.WARN)
+          end)
+        end
+      end
+    end,
+  }, function(proc)
+    vim.schedule(function()
+      if proc.code == 0 then
+        vim.notify("Drive mounted at /content/drive. Cells can use /content/drive/MyDrive.", vim.log.levels.INFO)
+      else
+        vim.notify("Drive mount failed (see :messages). Retry with :ColabDriveMount or :ColabDrive.", vim.log.levels.WARN)
+      end
+    end)
+  end)
+end
+
+local function colab_drive_mount_terminal()
+  if vim.g.eos_colab_connected == nil then
+    vim.notify("Connect first: :ColabConnect, then :ColabDrive.", vim.log.levels.WARN)
+    return
+  end
   -- Fresh buffer first: termopen on the notebook would take it over (or
   -- throw on a modified buffer).
   local ok, split_err = pcall(vim.cmd, "botright 12new")
@@ -2330,7 +2362,8 @@ return {
       vim.api.nvim_create_user_command("ColabStop", function()
         colab_stop_now("Colab stopped. Notebook cells will run locally until :ColabConnect.")
       end, {})
-      vim.api.nvim_create_user_command("ColabDrive", colab_drive_mount, {})
+      vim.api.nvim_create_user_command("ColabDrive", colab_drive_mount_terminal, {})
+      vim.api.nvim_create_user_command("ColabDriveMount", colab_drive_mount, {})
       vim.api.nvim_create_user_command("ColabSync", function(opts)
         colab_sync_modules(vim.api.nvim_get_current_buf(), opts.fargs, false)
       end, { nargs = "*" })
