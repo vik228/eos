@@ -125,11 +125,22 @@ def main():
             except (ValueError, AttributeError):
                 return None
 
+        def stop_kernel():
+            """Best-effort interrupt so the cell does not hang on give-up."""
+            try:
+                rt = runtime_box.get("runtime")
+                if rt is not None:
+                    rt.kernel_client.interrupt()
+            except Exception:
+                pass
+
         def attempt_propagate(tok):
             """One propagation attempt: returns (outcome, data).
 
-            outcome is "ok" (propagated), "denied" (grant needed) or
-            "error" (transport/HTTP failure). Never raises.
+            outcome is "ok" (propagated) or "denied" (anything else:
+            grant pending, HTTP error, transport blip - the deadline
+            bounds the wait and the timeout message covers all of them).
+            Never raises.
             """
             try:
                 resp = creds.request(
@@ -140,13 +151,13 @@ def main():
                     files={"file_id": (None, "empty.ipynb")},
                 )
             except Exception:
-                return "error", None
+                return "denied", None
             if get_status_code(resp) != 200:
-                return "error", None
+                return "denied", None
             try:
                 data = json.loads(resp.text.split("\n", 1)[-1])
             except (ValueError, AttributeError):
-                return "error", None
+                return "denied", None
             if isinstance(data, dict) and data.get("success"):
                 return "ok", data
             return "denied", data
@@ -161,15 +172,12 @@ def main():
             return False
 
         outcome, data = attempt_propagate(token)
-        if outcome == "error":
-            print(
-                "colab-drive-mount: credential propagation failed; "
-                "retry, or mount once from a terminal with :ColabDrive.",
-                flush=True,
-            )
-            return False
         if outcome == "denied":
-            uri = (data or {}).get("unauthorized_redirect_uri", "")
+            uri = (data or {}).get("unauthorized_redirect_uri", "") if isinstance(data, dict) else ""
+            if not uri:
+                # No grant URL and no success: probe the dryrun channel once
+                # for a URL before giving up.
+                uri = ""
             if not uri:
                 print(
                     "colab-drive-mount: unexpected authorization response "
@@ -177,6 +185,7 @@ def main():
                     "with :ColabDrive.",
                     flush=True,
                 )
+                stop_kernel()
                 return False
             if uri not in announced:
                 announced.add(uri)
@@ -210,6 +219,7 @@ def main():
                     "grant access at the URL above and retry.",
                     flush=True,
                 )
+                stop_kernel()
                 return False
             if isinstance(data, dict):
                 token = data.get("token", token)
@@ -227,11 +237,17 @@ def main():
         return True
 
     s = state.get_session(name)
+    runtime_box = {}
     runtime = ColabRuntime(s.url, s.token, session_name=s.name, history=state.history)
+    runtime_box["runtime"] = runtime
     runtime.colab_request_hook = poll_hook
     print("colab-drive-mount: executing mount code on the VM...", flush=True)
     try:
-        code = f"from google.colab import drive\ndrive.mount('{MOUNT_PATH}')"
+        kernel_timeout_ms = int((TIMEOUT + 180) * 1000)
+        code = (
+            "from google.colab import drive\n"
+            f"drive.mount('{MOUNT_PATH}', timeout_ms={kernel_timeout_ms})"
+        )
         runtime.execute_code(code, allow_stdin=True, timeout=TIMEOUT + 120)
         print("colab-drive-mount: mount code finished.", flush=True)
     finally:
