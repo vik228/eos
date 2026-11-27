@@ -1717,6 +1717,7 @@ local function colab_drive_mount()
   end
   -- Poll-based mount needs no terminal: the consent URL is notified for the
   -- browser grant while the mount proceeds in the background.
+  vim.notify("Drive mount started in background; the browser consent link will pop up here.", vim.log.levels.INFO)
   local notified_url = false
   vim.system({ colab_script("colab-drive-mount") }, {
     text = true,
