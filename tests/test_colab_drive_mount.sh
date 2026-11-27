@@ -57,10 +57,35 @@ class FakeCreds:
         mode = open(os.path.join(STATE, "creds-mode")).read().strip() if os.path.exists(os.path.join(STATE, "creds-mode")) else "grant-now"
         if mode == "raise":
             raise ConnectionError("stub network down")
+        issued_file = os.path.join(STATE, "issued-tokens")
         if method == "GET":
-            # Mirrors reality: the dryrun GET carries only the token.
-            return FakeResponse(200, "ok\n" + json.dumps({"token": "stub-token"}))
-        # POST is always a propagation attempt (dryrun=false).
+            # Mirrors reality: each GET mints a fresh token; propagation
+            # only accepts the latest one (stale tokens 400).
+            n = 0
+            if os.path.exists(issued_file):
+                try:
+                    n = len(open(issued_file).read().strip().split())
+                except OSError:
+                    n = 0
+            tok = f"stub-token-{n}"
+            with open(issued_file, "a") as fh:
+                fh.write(tok + "\n")
+            return FakeResponse(200, "ok\n" + json.dumps({"token": tok}))
+        if (params or {}).get("dryrun") == "true":
+            # Dryrun channel: reports the grant URL while unauthorized.
+            return FakeResponse(200, "ok\n" + json.dumps(
+                {"success": False,
+                 "unauthorized_redirect_uri": "https://stub-consent/grant"}))
+        # Propagation channel: needs the latest token; 400 HTML otherwise
+        # (mirrors reality), 200+success once granted.
+        latest = ""
+        if os.path.exists(issued_file):
+            try:
+                latest = open(issued_file).read().strip().split()[-1]
+            except (IndexError, OSError):
+                latest = ""
+        if (headers or {}).get("x-goog-colab-token") != latest:
+            return FakeResponse(400, "<html>stale token</html>")
         n = 0
         counter = os.path.join(STATE, "post-count")
         if os.path.exists(counter):
@@ -68,10 +93,8 @@ class FakeCreds:
         open(counter, "w").write(str(n + 1))
         after = int(open(os.path.join(STATE, "grant-after")).read().strip())
         if n < after:
-            body = {"success": False, "unauthorized_redirect_uri": "https://stub-consent/grant"}
-        else:
-            body = {"success": True, "token": "stub-token"}
-        return FakeResponse(200, "ok\n" + json.dumps(body))
+            return FakeResponse(400, "<html>denied</html>")
+        return FakeResponse(200, "ok\n" + json.dumps({"success": True, "token": latest}))
 
 def get_credentials(config_path=None, provider=None):
     return FakeCreds()
