@@ -96,6 +96,19 @@ out="$("$script" start --dry-run --agent claude --profile personal \
 ! "$script" start --dry-run --agent codex --brief "$brief" --dir "$tmp/scratch" --worktree "$repo" >/dev/null 2>&1
 ! "$script" start --dry-run --agent codex --brief "$brief" --dir "$tmp/nope" >/dev/null 2>&1
 
+# opencode runs personal-only
+out="$("$script" start --dry-run --agent opencode --profile personal \
+  --brief "$brief" --worktree "$repo/.claude/worktrees/existing")"
+[[ "$out" == *"opencode-personal"*run* ]]
+[[ "$out" == *"OPENCODE_PERMISSION_MODE=auto"* ]]
+[[ "$out" != *"Finish with ONE squashed"* ]]
+! "$script" start --dry-run --agent opencode --profile work \
+  --brief "$brief" --worktree "$repo" >/dev/null 2>&1
+[[ "$("$script" start --dry-run --agent opencode --profile work \
+  --brief "$brief" --worktree "$repo" 2>&1 || true)" == *"personal"* ]]
+EOS_ALLOW_PERSONAL_AGENT_IN_WORK=1 "$script" start --dry-run --agent opencode --profile work \
+  --brief "$brief" --worktree "$repo" >/dev/null 2>&1
+
 # dry-run leaves no run directory behind
 [[ -z "$(ls -A "$EOS_AGENT_RUNS_DIR" 2>/dev/null)" ]]
 

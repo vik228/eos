@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# agent-run - launch a coding agent (codex | antigravity | claude) DETACHED on a written brief,
+# agent-run - launch a coding agent (codex | antigravity | claude | opencode) DETACHED on a written brief,
 # through the EOS per-agent wrappers (so the KB session lifecycle, doctor and audit still apply),
 # and manage the resulting run (status, log, wait, stop, list).
 #
@@ -17,6 +17,7 @@
 #       --new-worktree t6/xyz --base <sha> --repo /path/to/repo   # created under <repo>/.claude/worktrees/<slug>
 #       --dir /path/to/scratch                  # OR: plain dir for non-code briefs
 #       [--no-commit]                             # report-only: no commits or branches
+#       [--agent opencode --profile personal]     # opencode runs personal-only
 #       [--db nova_agent_xyz] [--subject "refactor: NOVA-26 ..."] [--effort medium]
 #       [--review <git range>] [--extra "more instructions"] [--tag c7f]
 #   agent-run status <run-id> | log <run-id> [-f] | wait <run-id> | stop <run-id> | list
@@ -133,10 +134,16 @@ cmd_start() {
       *) die "unknown start option: $1" ;;
     esac
   done
-  [[ -n "$agent" ]] || die "--agent is required (codex | antigravity | claude)"
+  [[ -n "$agent" ]] || die "--agent is required (codex | antigravity | claude | opencode; opencode is personal-only)"
   [[ -n "$brief" || -n "$prompt_override" ]] || die "--brief PATH (or --prompt) is required"
   [[ -z "$brief" || -f "$brief" ]] || die "brief not found: $brief"
   [[ "$profile" == work || "$profile" == personal ]] || die "--profile must be work or personal"
+  # Single-account agents: OpenCode holds one login (the personal one), so it is
+  # never launched from the work profile. (Antigravity work-profile refusal
+  # lives on feat/agent-run, still unmerged.)
+  if [[ "$agent" == opencode && "$profile" != personal && "${EOS_ALLOW_PERSONAL_AGENT_IN_WORK:-0}" != 1 ]]; then
+    die "opencode is a single-account (personal) agent and must not run from the work profile (override: EOS_ALLOW_PERSONAL_AGENT_IN_WORK=1)"
+  fi
 
   # worktree (or plain dir for non-code briefs: no branch, no commit)
   if [[ -n "$plain_dir" ]]; then
@@ -179,6 +186,9 @@ cmd_start() {
     claude)
       cmd=(env "EOS_AGENT_CWD=$wt" "$ROOT/scripts/claude-$profile" -p "$prompt" --output-format text)
       [[ -n "$model" ]] && cmd+=(--model "$model") ;;
+    opencode)
+      cmd=(env "EOS_AGENT_CWD=$wt" "OPENCODE_PERMISSION_MODE=auto" "$ROOT/scripts/opencode-$profile" run)
+      cmd+=("$prompt") ;;
     *) die "unknown agent: $agent" ;;
   esac
   if [[ "$dry_run" == 1 ]]; then
