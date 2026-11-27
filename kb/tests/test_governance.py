@@ -64,7 +64,7 @@ def test_capture_review_and_promote_are_hash_bound(
     root.mkdir()
     _session(root, "parent")
     proposal_file = tmp_path / "proposal.yaml"
-    result = "---\ntype: Decision\ntitle: Service\nresource: kb:demo/service\n---\n# Service\nCurrent behavior.\n"
+    result = "---\ntype: Decision\ntitle: Service\nresource: kb:demo/service\nfreshness: historical\n---\n# Service\nCurrent behavior.\n"
     _proposal_input(proposal_file, result)
     proposal = capture_proposal(root, target="projects/demo/service.md", proposal_file=proposal_file, session_id="parent")
     assert load_proposal(root, proposal.proposal_id) == proposal
@@ -256,3 +256,75 @@ def test_surrogate_escaped_proposal_loads_emoji(tmp_path: Path) -> None:
     assert "\\ud83d\\ude00" in proposal_file.read_text(encoding="utf-8")
     proposal = capture_proposal(root, target="projects/demo/party.md", proposal_file=proposal_file, session_id="parent")
     assert "\U0001F600" in proposal.result_content
+
+
+def test_promote_refuses_new_doc_without_freshness(tmp_path: Path) -> None:
+    from eos_kb.gate import load_gate
+
+    root = tmp_path / "knowledge"
+    root.mkdir()
+    _session(root, "parent")
+    index_bundle(root)
+    assert load_gate(root) is not None
+    proposal_file = tmp_path / "proposal.yaml"
+    result = "---\ntype: Decision\ntitle: Service\nresource: kb:demo/service\n---\n# Service\nCurrent behavior.\n"
+    _proposal_input(proposal_file, result)
+    proposal = capture_proposal(root, target="projects/demo/service.md", proposal_file=proposal_file, session_id="parent")
+    review_proposal(root, proposal.proposal_id, actor="Vikas", session_id="parent", decision="accepted")
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    with pytest.raises(GovernanceError) as raised:
+        promote_proposal(root, proposal.proposal_id, session_id="parent", source_root=source_root)
+    assert raised.value.code == "governance.result_invalid"
+    assert "freshness.contract_required" in raised.value.message
+    assert load_proposal(root, proposal.proposal_id).state is ProposalState.ACCEPTED
+
+
+def test_promote_writes_hash_bound_review_event(tmp_path: Path) -> None:
+    import json as json_module
+
+    from eos_kb.freshness import audit_freshness
+    from eos_kb.gate import last_review_for
+    from eos_kb.normalize import normalized_content_hash
+
+    root = tmp_path / "knowledge"
+    root.mkdir()
+    _session(root, "parent")
+    index_bundle(root)
+    proposal_file = tmp_path / "proposal.yaml"
+    result = (
+        "---\ntype: Decision\ntitle: Service\nresource: kb:demo/service\n"
+        "freshness: tracked\nreview_every: 30d\n---\n# Service\nCurrent behavior.\n"
+    )
+    _proposal_input(proposal_file, result)
+    proposal = capture_proposal(root, target="projects/demo/service.md", proposal_file=proposal_file, session_id="parent")
+    review_proposal(root, proposal.proposal_id, actor="Vikas", session_id="parent", decision="accepted")
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    promoted = promote_proposal(root, proposal.proposal_id, session_id="parent", source_root=source_root)
+    assert promoted.state is ProposalState.PROMOTED
+    content_hash = normalized_content_hash(result)
+    assert last_review_for(root, "projects/demo/service.md", content_hash) is not None
+    assert last_review_for(root, "projects/demo/service.md", "sha256:" + "0" * 64) is None
+    lines = (root / ".eos" / "reviews.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    event = json_module.loads(lines[0])
+    assert event["target"] == "projects/demo/service.md"
+    assert event["content_hash"] == content_hash
+    report = audit_freshness(root, source_root)
+    assert [item.state for item in report.time] == ["current"]
+
+
+def test_direct_change_approval_records_review_event(tmp_path: Path) -> None:
+    from eos_kb.gate import last_review_for
+    from eos_kb.normalize import normalized_content_hash
+
+    root = tmp_path / "knowledge"
+    root.mkdir()
+    _session(root, "parent")
+    target = root / "concept.md"
+    text = "---\ntype: Decision\ntitle: Concept\nresource: kb:concept\nfreshness: tracked\nreview_every: 30d\n---\nOriginal\n"
+    target.write_text(text, encoding="utf-8")
+    index_bundle(root)
+    review_direct_change(root, "concept.md", actor="Vikas", session_id="parent")
+    assert last_review_for(root, "concept.md", normalized_content_hash(text)) is not None

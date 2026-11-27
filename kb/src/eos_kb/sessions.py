@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from .storage import atomic_write, state_directory, writer_lock
+from .usage_log import read_usage
 
 
 class SessionError(RuntimeError):
@@ -107,6 +109,7 @@ def start_session(
         "updated_at": now,
         "state": "active",
         "changed_paths": [],
+        "used_resources": [],
         "active_investigation_ids": [],
     }
     with writer_lock(_state(root)):
@@ -162,6 +165,27 @@ def checkpoint_session(root: Path, session_id: str, *, changed_paths: list[str] 
     return record
 
 
+def record_session_reads(root: Path, session_id: str, resources: list[str]) -> dict[str, Any]:
+    """Record docs this session read directly (agent Read/cat, outside kb search).
+
+    Retrieval via kb search/context is already captured in the usage log; this
+    covers the other half of "used" so the freshness gate can scope an expired
+    tracked doc to the sessions that actually saw it. Only active sessions can
+    record reads.
+    """
+    path = _path(root, session_id)
+    with writer_lock(_state(root)):
+        record = _read(root, session_id)
+        if record["state"] != "active":
+            raise SessionError("only active sessions can record reads")
+        merged = sorted(set(record.get("used_resources", [])) | {str(item) for item in resources if str(item)})
+        record["used_resources"] = merged
+        record["updated_at"] = _now()
+        _write(path, record)
+        _event(root, session_id, "record-read", resources=merged)
+    return record
+
+
 def end_session(root: Path, session_id: str, *, exit_code: int) -> dict[str, Any]:
     record = checkpoint_session(root, session_id)
     path = _path(root, session_id)
@@ -209,3 +233,49 @@ def recover_sessions(root: Path, *, lease_seconds: int = 300, now: datetime | No
 
 def load_session(root: Path, session_id: str) -> dict[str, Any]:
     return _read(root, session_id)
+
+
+def session_used_resources(root: Path, session_id: str | None) -> set[str]:
+    """Docs the session used: kb retrieval cards plus recorded direct reads.
+
+    Retrieval (search/context/show/related) lands in the usage log keyed by
+    the agent session id, which the wrappers set to the kb session id.
+    Direct file reads land in the session record via record_session_reads.
+    Entries recorded as repo-relative paths are resolved to the card
+    resources the freshness report names; the raw values are kept too.
+    """
+    if not session_id:
+        return set()
+    used: set[str] = set()
+    try:
+        entries = read_usage(root)
+    except Exception:
+        entries = []
+    for entry in entries:
+        if not isinstance(entry, dict) or entry.get("session_id") != session_id:
+            continue
+        cards = entry.get("cards")
+        if isinstance(cards, list):
+            used.update(str(card) for card in cards if card)
+    try:
+        record = _read(root, session_id)
+    except (FileNotFoundError, SessionError):
+        record = {}
+    stored = record.get("used_resources", []) if isinstance(record, dict) else []
+    if isinstance(stored, list):
+        used.update(str(item) for item in stored if item)
+    if not used:
+        return used
+    try:
+        database = state_directory(root) / "index.sqlite3"
+        connection = sqlite3.connect(f"{database.resolve().as_uri()}?mode=ro", uri=True)
+        try:
+            rows = connection.execute("SELECT resource, relative_file FROM concepts").fetchall()
+        finally:
+            connection.close()
+    except Exception:
+        rows = []
+    for resource, relative_file in rows:
+        if relative_file in used:
+            used.add(resource or relative_file)
+    return used

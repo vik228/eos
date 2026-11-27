@@ -18,7 +18,7 @@ from .indexer import index_bundle, validate_bundle
 from .investigations import InvestigationError, block_investigation, complete_investigation, record_evidence, resume_investigation, start_investigation, status_investigation
 from .migration import MigrationError, apply as apply_migration, inventory as migration_inventory, manifest_hash, plan as plan_migration, record_migration_approval, rollback as rollback_migration, verify_plan
 from .retrieval import context as retrieve_context, related as retrieve_related, search as retrieve_search, show as retrieve_show, status as retrieve_status
-from .sessions import SessionError, checkpoint_session, end_session, recover_sessions, resume_session, start_session
+from .sessions import SessionError, checkpoint_session, end_session, record_session_reads, recover_sessions, resume_session, session_used_resources, start_session
 from .storage import StorageError, atomic_write
 from .usage_log import record_usage
 
@@ -276,19 +276,31 @@ def _search(args: argparse.Namespace) -> CommandResult:
 
 def _show(args: argparse.Namespace) -> CommandResult:
     try:
-        card = retrieve_show(_resolve_retrieval_route(args).kb, args.concept, section=args.section)
+        route = _resolve_retrieval_route(args)
+        card = retrieve_show(route.kb, args.concept, section=args.section)
     except (RegistryError, ValueError) as exc:
         message = exc.remediation if isinstance(exc, RegistryError) else str(exc)
         return CommandResult("show", ResultStatus.VALIDATION_FAILURE, message, ExitCode.VALIDATION, True, getattr(exc, "code", "show.validation"), getattr(exc, "field_path", "$.concept"))
+    record_usage(
+        route.kb, command="show", query=args.concept, project=None,
+        jev_requested=False, jev_used=False, jev_tokens=0,
+        cards=[card.resource],
+    )
     return CommandResult("show", ResultStatus.SHOWN, f"showing {card.resource}", ExitCode.SUCCESS, data=card.as_dict())
 
 
 def _related(args: argparse.Namespace) -> CommandResult:
     try:
-        cards = retrieve_related(_resolve_retrieval_route(args).kb, args.concept, limit=args.limit)
+        route = _resolve_retrieval_route(args)
+        cards = retrieve_related(route.kb, args.concept, limit=args.limit)
     except (RegistryError, ValueError) as exc:
         message = exc.remediation if isinstance(exc, RegistryError) else str(exc)
         return CommandResult("related", ResultStatus.VALIDATION_FAILURE, message, ExitCode.VALIDATION, True, getattr(exc, "code", "related.validation"), getattr(exc, "field_path", "$.concept"))
+    record_usage(
+        route.kb, command="related", query=args.concept, project=None,
+        jev_requested=False, jev_used=False, jev_tokens=0,
+        cards=[card.resource for card in cards],
+    )
     return CommandResult("related", ResultStatus.RELATED, f"found {len(cards)} related concept(s)", ExitCode.SUCCESS, data=[card.as_dict() for card in cards])
 
 
@@ -487,7 +499,7 @@ def _deprecate(args: argparse.Namespace) -> CommandResult:
     return CommandResult("deprecate", ResultStatus.DEPRECATED, f"deprecated {args.concept}", ExitCode.SUCCESS, data=proposal.payload())
 
 
-def _lifecycle_audit(route: WorkspaceRoute, command: str) -> CommandResult | None:
+def _lifecycle_audit(route: WorkspaceRoute, command: str, session_id: str | None = None) -> CommandResult | None:
     """Audit the declared workspace before a lifecycle mutation is persisted."""
     try:
         report = audit_freshness(
@@ -513,16 +525,57 @@ def _lifecycle_audit(route: WorkspaceRoute, command: str) -> CommandResult | Non
     # evidence cannot currently be evaluated. Keep it visible in audit and
     # retrieval output, but do not deadlock an otherwise valid agent session.
     # Confirmed stale evidence and contradictions remain lifecycle blockers.
-    if report.overall != "stale" and not contradictions:
+    if not hasattr(report, "time"):
+        # Legacy report shape without per-finding time detail: every
+        # confirmed stale warning blocks KB-wide, as before.
+        if report.overall != "stale" and not contradictions:
+            return None
+
+        # Unknown findings are advisory: they stay visible in audit output and
+        # the JSON report payload, but they must not name the lifecycle blocker.
+        # Confirmed stale evidence and contradictions are the blockers, so they
+        # lead the message in their original audit order (time findings already
+        # carry their stale_after dates).
+        blocking = [reason for reason in warnings if "unknown" not in reason]
+        reasons = blocking
+        if contradictions and not any("contradiction" in reason for reason in reasons):
+            reasons.append(f"{len(contradictions)} contradiction(s) detected")
+        if not reasons:
+            reasons.append(f"freshness is {report.overall}")
+        report_data = report.as_dict() if hasattr(report, "as_dict") else None
+        return CommandResult(
+            command,
+            ResultStatus.VALIDATION_FAILURE,
+            f"freshness audit blocked lifecycle: {'; '.join(reasons)}",
+            ExitCode.BLOCKED_LIFECYCLE,
+            True,
+            "freshness.lifecycle_blocked",
+            "$.freshness",
+            report_data,
+        )
+
+    # Session-scoped expiry: an expired tracked doc blocks only the session
+    # that used it. "Used" is kb retrieval in that session (usage log) plus
+    # direct reads recorded into the session record. Other sessions see the
+    # same expiry as a warning via kb audit/stale, not a block.
+    # Contradictions and non-time stale evidence still block KB-wide.
+    kb_wide = [
+        reason
+        for reason in warnings
+        if "unknown" not in reason and not reason.startswith("time ")
+    ]
+    stale_detail = {
+        finding.resource: finding.stale_after
+        for finding in report.time
+        if finding.state == "stale"
+    }
+    used = session_used_resources(route.kb, session_id)
+    mine = sorted(resource for resource in stale_detail if resource in used)
+    if not contradictions and not kb_wide and not mine:
         return None
 
-    # Unknown findings are advisory: they stay visible in audit output and the
-    # JSON report payload, but they must not name the lifecycle blocker.
-    # Confirmed stale evidence and contradictions are the blockers, so they
-    # lead the message in their original audit order (time findings already
-    # carry their stale_after dates).
-    blocking = [reason for reason in warnings if "unknown" not in reason]
-    reasons = blocking
+    reasons = list(kb_wide)
+    reasons.extend(f"time stale: {resource} ({stale_detail[resource]})" for resource in mine)
     if contradictions and not any("contradiction" in reason for reason in reasons):
         reasons.append(f"{len(contradictions)} contradiction(s) detected")
     if not reasons:
@@ -544,8 +597,10 @@ def _session_command(args: argparse.Namespace) -> CommandResult:
     try:
         route = _resolve_retrieval_route(args)
         command = args.command_path.split()[1]
+        if command in {"checkpoint", "end"} and getattr(args, "used_resources", None):
+            record_session_reads(route.kb, args.session_id, list(args.used_resources))
         if command in {"checkpoint", "end"}:
-            blocked = _lifecycle_audit(route, args.command_path)
+            blocked = _lifecycle_audit(route, args.command_path, getattr(args, "session_id", None))
             if blocked is not None:
                 return blocked
         if command == "start":
@@ -750,6 +805,13 @@ def _configure_top_level_grammar(
     elif command == "checkpoint":
         _add_kb_argument(parser)
         parser.add_argument("--session")
+        parser.add_argument(
+            "--used-resource",
+            dest="used_resources",
+            action="append",
+            default=None,
+            help="record a directly read doc (resource or repo-relative path) as used by this session",
+        )
     elif command == "propose":
         _add_kb_argument(parser)
         parser.add_argument("--target", required=True)
@@ -795,10 +857,24 @@ def _configure_session_grammar(
     elif command == "checkpoint":
         parser.add_argument("session_id")
         _add_kb_argument(parser)
+        parser.add_argument(
+            "--used-resource",
+            dest="used_resources",
+            action="append",
+            default=None,
+            help="record a directly read doc (resource or repo-relative path) as used by this session",
+        )
     elif command == "end":
         parser.add_argument("session_id")
         _add_kb_argument(parser)
         parser.add_argument("--exit-code", type=int, required=True)
+        parser.add_argument(
+            "--used-resource",
+            dest="used_resources",
+            action="append",
+            default=None,
+            help="record a directly read doc (resource or repo-relative path) as used by this session",
+        )
     elif command == "recover":
         _add_kb_argument(parser)
         parser.add_argument("--lease-seconds", type=positive_int, default=300)

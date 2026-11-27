@@ -144,7 +144,7 @@ def _validate_metadata(metadata: Any, filename: str) -> dict[str, Any]:
         raise _error("schema.type", filename, "$", "Use a YAML mapping for the frontmatter.")
     if "type" not in metadata:
         raise _error("schema.required", filename, "$.type", "Add a non-empty string 'type' to the YAML frontmatter.")
-    for field in ("type", "title", "description", "resource", "stale_after"):
+    for field in ("type", "title", "description", "resource", "stale_after", "freshness", "review_every", "reviewed_at"):
         _validate_non_blank_string(metadata, field, filename)
     for field in ("tags", "sources"):
         _validate_non_blank_string_list(metadata, field, filename)
@@ -152,6 +152,13 @@ def _validate_metadata(metadata: Any, filename: str) -> dict[str, Any]:
         raise _error("schema.derived_field", filename, "$.authoritative", "Remove 'authoritative'; it is derived from lifecycle and evidence.")
     if "status" in metadata and metadata["status"] not in tuple(item.value for item in Status):
         raise _error("schema.enum", filename, "$.status", "Set 'status' to draft, stable, or deprecated.")
+    if "freshness" in metadata and metadata["freshness"] not in ("tracked", "historical"):
+        raise _error(
+            "schema.enum",
+            filename,
+            "$.freshness",
+            "Set 'freshness' to tracked or historical.",
+        )
     if "generated" in metadata and not isinstance(metadata["generated"], bool):
         raise _error("schema.type", filename, "$.generated", "Set 'generated' to a boolean.")
     if "verified" in metadata and not isinstance(metadata["verified"], list):
@@ -225,6 +232,9 @@ def parse_concept_text(document: str, relative_file: str, *, trust: Trust = Trus
         verified=tuple(metadata.get("verified", [])),
         source_revision=eos.get("source_revision"),
         stale_after=metadata.get("stale_after"),
+        freshness_mode=metadata.get("freshness"),
+        review_every=metadata.get("review_every"),
+        reviewed_at=metadata.get("reviewed_at"),
     )
 
 

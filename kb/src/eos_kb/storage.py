@@ -19,7 +19,7 @@ class StorageError(RuntimeError):
         super().__init__(f"{code}: {message}")
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 _JOURNAL_SCHEMA_VERSION = 1
 _JOURNAL_PHASES = {
     "intent",
@@ -131,7 +131,10 @@ def create_database(path: Path) -> sqlite3.Connection:
                 verified TEXT NOT NULL,
                 body TEXT NOT NULL,
                 source_revision TEXT,
-                stale_after TEXT
+                stale_after TEXT,
+                freshness_mode TEXT,
+                review_every TEXT,
+                reviewed_at TEXT
             );
             CREATE TABLE headings (
                 relative_file TEXT NOT NULL REFERENCES concepts(relative_file) ON DELETE CASCADE,

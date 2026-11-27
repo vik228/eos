@@ -6,12 +6,13 @@ import re
 import sqlite3
 import subprocess
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 from urllib.parse import unquote, urlparse
 
-from .indexer import valid_manifest
+from .gate import activation_review_at, last_review_for, load_gate
+from .indexer import parse_review_window, valid_manifest
 from .storage import SCHEMA_VERSION, atomic_write, state_directory, writer_lock
 
 
@@ -199,16 +200,6 @@ def _current_blob(root: Path, path: str) -> str | None:
 def _matches(path: str, patterns: Iterable[str]) -> bool:
     candidate = PurePosixPath(path)
     return any(candidate.match(pattern) for pattern in patterns)
-
-
-def _parse_time(value: str) -> datetime | None:
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
 
 
 def _external_path(source: str) -> Path | None:
@@ -447,7 +438,7 @@ def audit_freshness(
             raise sqlite3.DatabaseError("quick_check failed")
         concepts = connection.execute(
             "SELECT relative_file, resource, project, type, status, verified, stale_after, "
-            "source_revision FROM concepts ORDER BY relative_file"
+            "freshness_mode, review_every, reviewed_at, source_revision FROM concepts ORDER BY relative_file"
         ).fetchall()
         indexed_sources: dict[str, dict[str, list[str]]] = {}
         for row in connection.execute(
@@ -486,6 +477,12 @@ def audit_freshness(
     source_findings: list[SourceFinding] = []
     external_findings: list[ExternalSourceFinding] = []
     time_findings: list[TimeFinding] = []
+    gate = load_gate(root)
+    content_hashes = {
+        item.get("path"): item.get("content_hash")
+        for item in manifest["concepts"]
+        if isinstance(item, dict)
+    }
     concept_by_resource: dict[str, sqlite3.Row] = {
         (row["resource"] or row["relative_file"]): row for row in concepts
     }
@@ -568,16 +565,51 @@ def audit_freshness(
                 )
             )
 
-        # A Log is a dated record of what happened; it cannot go out of date, so its
-        # stale_after is ignored rather than blocking the lifecycle when it passes.
-        # Deprecated concepts are frozen in the same way: the claims check below
-        # already skips deprecated owners, so time must not flag them either.
-        if row["stale_after"] and row["type"] != "Log" and row["status"] != "deprecated":
-            stale_at = _parse_time(row["stale_after"])
-            time_state = "unknown" if stale_at is None else (
-                "stale" if generated >= stale_at else "current"
+        # Expiry rule: the review window wins and stale_after is inert. It
+        # stays parsed in frontmatter and stored in the index for reference,
+        # but the audit never reads it: untagged docs are always unknown
+        # (never stale, never blocking), and tracked docs expire only from
+        # their window. Historical docs skip the time check and the unknown
+        # fallback below; type: is never consulted for the decision.
+        # Deprecated concepts are frozen the same way: the claims check
+        # below already skips deprecated owners, so time ignores them too.
+        mode = row["freshness_mode"]
+        if row["status"] == "deprecated" or mode == "historical":
+            continue
+        if row["type"] == "Log" and mode != "tracked":
+            continue
+        if mode != "tracked":
+            continue
+        window_days = parse_review_window(row["review_every"])
+        if window_days is None:
+            time_findings.append(
+                TimeFinding(
+                    resource,
+                    row["review_every"] or "review window missing",
+                    "unknown",
+                )
             )
-            time_findings.append(TimeFinding(resource, row["stale_after"], time_state))
+            continue
+        # Last review is the latest review event whose content hash still
+        # matches the indexed content; a bare reviewed_at edit has no event
+        # and therefore never moves expiry. Docs already tracked at gate
+        # activation fall back to the activation timestamp while their
+        # content is unchanged since the snapshot.
+        current_hash = content_hashes.get(row["relative_file"])
+        last_review = last_review_for(root, row["relative_file"], current_hash)
+        if last_review is None:
+            last_review = activation_review_at(gate, row["relative_file"], current_hash)
+        if last_review is None:
+            time_findings.append(TimeFinding(resource, row["review_every"], "unknown"))
+            continue
+        effective = last_review + timedelta(days=window_days)
+        time_findings.append(
+            TimeFinding(
+                resource,
+                effective.isoformat(),
+                "stale" if generated >= effective else "current",
+            )
+        )
 
     grouped_claims: dict[tuple[str, str], list[tuple[str, str]]] = {}
     for row in claims:
@@ -712,11 +744,20 @@ def audit_freshness(
             if resource in resource_states:
                 resource_states[resource].append(item.state)
     concept_freshness: list[ConceptFreshness] = []
+    # Historical docs are dated records, never live references: they are
+    # fresh unless conflicting evidence says otherwise, and never unknown.
+    historical_resources = {
+        (row["resource"] or row["relative_file"])
+        for row in concepts
+        if row["freshness_mode"] == "historical"
+    }
     for resource, values in sorted(resource_states.items()):
         if any(value in {"drifted", "stale", "pending"} for value in values):
             concept_state = "stale"
         elif "unknown" in values or not values:
-            concept_state = "unknown"
+            # Historical docs are dated records, never live references: with
+            # no conflicting evidence they report fresh, never unknown.
+            concept_state = "fresh" if resource in historical_resources else "unknown"
         else:
             concept_state = "fresh"
         concept_freshness.append(

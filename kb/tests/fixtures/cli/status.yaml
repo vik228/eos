@@ -26,5 +26,5 @@ cases:
       - format: json
         argv: ["status","--kb","${TMP}/index","--json"]
         exit_code: 0
-        stdout: "{\"command\": \"status\", \"data\": {\"bundle\": {\"concepts\": 1}, \"schema_version\": 4, \"state\": {\"corrupt\": [], \"missing\": []}}, \"exit_code\": 0, \"message\": \"knowledge index status\", \"status\": \"ready\"}\n"
+        stdout: "{\"command\": \"status\", \"data\": {\"bundle\": {\"concepts\": 1}, \"schema_version\": 5, \"state\": {\"corrupt\": [], \"missing\": []}}, \"exit_code\": 0, \"message\": \"knowledge index status\", \"status\": \"ready\"}\n"
         stderr: ""

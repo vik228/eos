@@ -804,3 +804,140 @@ def test_bug_record_accepts_file_value_source(
     assert exit_code in (ExitCode.VALIDATION, ExitCode.BLOCKED_LIFECYCLE)
     assert captured.out == ""
     assert "registry.workspace_not_found" in captured.err
+
+
+def _write_gate_doc(kb: Path, relative: str, resource: str, **fields: object) -> None:
+    merged: dict[str, object] = {"type": "Decision", "title": relative, "resource": resource}
+    merged.update(fields)
+    lines = ["---"]
+    lines.extend(f"{key}: {json.dumps(value)}" for key, value in merged.items())
+    lines.extend(["---", f"# {relative}", "Body text."])
+    path = kb / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _gate_route(workspace: Path, kb: Path, monkeypatch: pytest.MonkeyPatch) -> WorkspaceRoute:
+    route = WorkspaceRoute(workspace, kb, "demo")
+    monkeypatch.setattr("eos_kb.cli._resolve_retrieval_route", lambda args: route)
+    return route
+
+
+def test_expired_tracked_blocks_only_the_session_that_used_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from datetime import datetime, timezone
+
+    from eos_kb.gate import record_review_event
+    from eos_kb.indexer import index_bundle
+    from eos_kb.sessions import start_session
+
+    workspace = tmp_path / "workspace"
+    kb = tmp_path / "knowledge"
+    workspace.mkdir()
+    kb.mkdir()
+    _gate_route(workspace, kb, monkeypatch)
+    _write_gate_doc(kb, "old.md", "kb:demo/old", freshness="tracked", review_every="30d")
+    # fix body with searchable token
+    (kb / "old.md").write_text(
+        (kb / "old.md").read_text(encoding="utf-8") + "\nuniquetoken\n", encoding="utf-8"
+    )
+    index_bundle(kb)
+    from eos_kb.storage import state_directory
+
+    manifest = json.loads((state_directory(kb) / "manifest.json").read_text(encoding="utf-8"))
+    content_hash = next(item["content_hash"] for item in manifest["concepts"] if item["path"] == "old.md")
+    record_review_event(
+        kb, target="old.md", content_hash=content_hash,
+        proposal_id="p1", session_id="s-user",
+        reviewed_at="2026-01-01T00:00:00+00:00",
+    )
+    user = start_session(kb, cwd=workspace, agent="codex", profile="demo", session_id="s-user")
+    other = start_session(kb, cwd=workspace, agent="codex", profile="demo", session_id="s-other")
+    assert user["session_id"] == "s-user" and other["session_id"] == "s-other"
+
+    # The using session retrieves the doc through kb search ...
+    monkeypatch.setenv("EOS_AGENT_SESSION_ID", "s-user")
+    assert main(["search", "uniquetoken", "--kb", str(kb), "--json"]) == ExitCode.SUCCESS
+    capsys.readouterr()
+    # ... so its checkpoint is blocked by the expiry it saw.
+    assert main(["session", "checkpoint", "s-user", "--kb", str(kb), "--json"]) == ExitCode.BLOCKED_LIFECYCLE
+    blocked = json.loads(capsys.readouterr().err)
+    assert blocked["error"]["code"] == "freshness.lifecycle_blocked"
+    assert "time stale: kb:demo/old" in blocked["message"]
+    # The other session never used the doc: warning only, checkpoint passes.
+    assert main(["session", "checkpoint", "s-other", "--kb", str(kb), "--json"]) == ExitCode.SUCCESS
+
+
+def test_direct_read_blocks_using_session_via_used_resource(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from eos_kb.gate import record_review_event
+    from eos_kb.indexer import index_bundle
+    from eos_kb.sessions import start_session
+    from eos_kb.storage import state_directory
+
+    workspace = tmp_path / "workspace"
+    kb = tmp_path / "knowledge"
+    workspace.mkdir()
+    kb.mkdir()
+    _gate_route(workspace, kb, monkeypatch)
+    _write_gate_doc(kb, "old.md", "kb:demo/old", freshness="tracked", review_every="30d")
+    index_bundle(kb)
+    manifest = json.loads((state_directory(kb) / "manifest.json").read_text(encoding="utf-8"))
+    content_hash = next(item["content_hash"] for item in manifest["concepts"] if item["path"] == "old.md")
+    record_review_event(
+        kb, target="old.md", content_hash=content_hash,
+        proposal_id="p1", session_id="s-user",
+        reviewed_at="2026-01-01T00:00:00+00:00",
+    )
+    start_session(kb, cwd=workspace, agent="codex", profile="demo", session_id="s-user")
+
+    exit_code = main([
+        "session", "checkpoint", "s-user", "--kb", str(kb),
+        "--used-resource", "kb:demo/old", "--json",
+    ])
+    assert exit_code == ExitCode.BLOCKED_LIFECYCLE
+    blocked = json.loads(capsys.readouterr().err)
+    assert blocked["error"]["code"] == "freshness.lifecycle_blocked"
+    assert "time stale: kb:demo/old" in blocked["message"]
+
+
+def test_contradiction_and_drift_block_every_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from types import SimpleNamespace as Namespace
+
+    from eos_kb.freshness import Contradiction, TimeFinding
+
+    workspace = tmp_path / "workspace"
+    kb = tmp_path / "knowledge"
+    workspace.mkdir()
+    kb.mkdir()
+    _gate_route(workspace, kb, monkeypatch)
+
+    drift = Namespace(
+        overall="stale",
+        warnings=("source drift: kb:demo/a (src/a.py)",),
+        contradictions=(),
+        time=(),
+    )
+    monkeypatch.setattr("eos_kb.cli.audit_freshness", lambda *args, **kwargs: drift)
+    assert main(["session", "checkpoint", "s-unused", "--kb", str(kb), "--json"]) == ExitCode.BLOCKED_LIFECYCLE
+    assert "source drift" in json.loads(capsys.readouterr().err)["message"]
+
+    contradiction = Namespace(
+        overall="stale",
+        warnings=("contradiction: demo:mode",),
+        contradictions=(Contradiction("demo", "mode", ("kb:demo/a", "kb:demo/b"), ('"one"', '"two"')),),
+        time=(TimeFinding("kb:demo/old", "2026-01-31T00:00:00+00:00", "stale"),),
+    )
+    monkeypatch.setattr("eos_kb.cli.audit_freshness", lambda *args, **kwargs: contradiction)
+    assert main(["session", "checkpoint", "s-unused", "--kb", str(kb), "--json"]) == ExitCode.BLOCKED_LIFECYCLE
+    assert "contradiction" in json.loads(capsys.readouterr().err)["message"]

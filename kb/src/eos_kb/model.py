@@ -74,6 +74,16 @@ class Concept:
     verified: tuple[dict[str, object], ...] = ()
     source_revision: str | None = None
     stale_after: str | None = None
+    # Freshness contract: how expiry is decided for this doc. "tracked" docs
+    # declare their own review window; "historical" docs never expire and are
+    # never "unknown". None means untagged (reported, not blocking). This is
+    # keyed off the per-doc frontmatter field, never off type:.
+    # stale_after is inert (kept for reference only); reviewed_at is
+    # informational only and never moves expiry - only a review event bound
+    # to the promoted content hash counts as a review.
+    freshness_mode: str | None = None
+    review_every: str | None = None
+    reviewed_at: str | None = None
 
     @property
     def authoritative(self) -> bool:
