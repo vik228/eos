@@ -15,12 +15,13 @@ readable, versionable, and portable without EOS.
 EOS is local-first. The knowledge base and supporting services run on your
 machine by default, or on infrastructure you control. EOS sits between your
 knowledge and agent harnesses through skills, lifecycle integrations, and an
-planned MCP boundary; it does not require EOS-managed knowledge hosting.
+MCP boundary; it does not require EOS-managed knowledge hosting.
 
 The current reference integration is an agent-native macOS engineering
-environment for Claude, Codex, and other coding agents. The product direction
-extends the same user-controlled knowledge layer to web and app agent harnesses
-and to workflows beyond coding.
+environment for Claude, Codex, and other coding agents, alongside a remote
+Streamable HTTP MCP server for web and mobile chat apps. The broader direction
+extends the same user-controlled knowledge layer to additional non-coding
+workflows.
 
 ## Why EOS
 
@@ -52,9 +53,10 @@ Consider one person using AI across their full knowledge life:
 - Finance and health conversations use their own private routes and never leak
   into a work session.
 
-Today, EOS implements this most deeply for local terminal and coding-agent
-workflows. Web/app harness access, broader non-coding adapters, and their exact
-permission model remain planned work.
+Today, EOS implements this for local terminal/coding-agent workflows as well
+as remote web and mobile chat harnesses (via its Streamable HTTP MCP server
+with isolated `personal` and `work` endpoints). Broader non-coding standalone
+installers remain planned work.
 
 ## How It Works
 
@@ -128,6 +130,18 @@ scripts/eos setup --agent codex
 - Migration planning, approval binding, verification, and rollback.
 - Direct-write protection for curated knowledge, with explicit working-register
   exceptions for logs and pending proposals.
+- Remote Streamable HTTP MCP server (`scripts/eos-kb-mcp`) with isolated
+  `/mcp/personal` and `/mcp/work` endpoints, Google OAuth 2.1 broker
+  (DCR + PKCE S256 + per-endpoint email allowlists), and Option A write
+  governance (`kb_log`, `kb_propose`).
+- Synthesis and proactive prep workflows: `scripts/eos-kb-digest` (`kb_digest`)
+  for clustering recent logs, deduplicating proposals, and surfacing due
+  decision revisits, plus `scripts/eos-kb-brief` (`kb_brief`) for one-shot
+  pre-meeting and topic briefs.
+- Remote coding-agent orchestration (`agent_start`, `agent_list`, `agent_status`,
+  `agent_logs`, `agent_followup`, `agent_wait`, `agent_stop`) launching named
+  sessions inside active EOS `tmux` workspaces with incremental progress
+  streaming and a structured `handoff.json` (`needs_input` / `completed`) loop.
 
 See [Agent Knowledge System](docs/AGENT_KNOWLEDGE_SYSTEM.md) for the complete
 model.
@@ -143,10 +157,8 @@ EOS is designed around user ownership:
 - Work and personal routes are isolated by profile.
 - Credentials and machine-specific context stay in ignored local files.
 - Agents propose stable changes; the user approves what becomes knowledge.
-
-The exact permission and consent model for exposing a local or self-hosted EOS
-instance to third-party web/app harnesses is intentionally still open. EOS does
-not currently claim a finished remote-access solution.
+- Remote web/app access uses explicit per-endpoint Google OAuth 2.1 allowlists
+  and bounds writes strictly to `logs/` and `_pending-kb-updates.md` queues.
 
 ## Optional Integrations
 
@@ -170,13 +182,15 @@ EOS_PROFILE=research research
 EOS_PROFILE=writing write
 ```
 
-### Future harness integrations
+### Remote MCP and web/app harnesses
 
-The intended expansion is to let Claude, ChatGPT, and similar web/app agent
-harnesses use the same user-controlled KB through installable skills and MCP.
-EOS should facilitate governed access, not take ownership of the knowledge.
-The delivery and permission design will be developed separately and is tracked
-in the [Roadmap](ROADMAP.md).
+EOS includes a local Streamable HTTP MCP server (`scripts/eos-kb-mcp`) that
+exposes isolated `/mcp/personal` and `/mcp/work` endpoints behind your own
+HTTPS tunnel (for example, Cloudflare Tunnel) and Google OAuth 2.1 email
+allowlists. Chat and voice apps can read budgeted KB context, capture logs and
+proposals, generate digests and topic briefs, and launch or resume named coding
+agent sessions inside your local `tmux` workspaces. Configure `EOS_MCP_*`
+variables in `.eos.local` (see `eos.local.example`).
 
 ## What You Can Customize
 
@@ -194,10 +208,9 @@ knowledge. Advanced users can configure the same system directly. See
 
 ## Current Scope
 
-The governed KB runtime is the product core. The repository still packages it
-with an opinionated macOS engineering environment, and setup currently assumes
-that distribution. A standalone non-engineering installer, third-party web/app
-harness adapters, and a settled remote permission model do not exist yet.
+The governed KB runtime is the product core. The repository packages it with
+an opinionated macOS engineering environment and a remote MCP server for web/app
+chat harnesses; a standalone non-engineering installer does not exist yet.
 
 This distinction is deliberate: engineering is the first mature integration,
 not the boundary of the platform.

@@ -40,3 +40,12 @@
 : "${EOS_COLAB_IDLE_MINUTES:=15}"
 : "${EOS_COLAB_LOCAL_PORT:=18989}"
 : "${EOS_COLAB_REMOTE_PORT:=18888}"
+
+# Optional remote EOS KB MCP server (scripts/eos-kb-mcp).
+: "${EOS_MCP_BASE_URL:=}"
+: "${EOS_MCP_HOST:=127.0.0.1}"
+: "${EOS_MCP_PORT:=8765}"
+: "${EOS_MCP_GOOGLE_CLIENT_ID:=}"
+: "${EOS_MCP_GOOGLE_CLIENT_SECRET:=}"
+: "${EOS_MCP_PERSONAL_EMAILS:=}"
+: "${EOS_MCP_WORK_EMAILS:=}"
